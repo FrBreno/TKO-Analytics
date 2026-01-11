@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block title %}Cohort View - TKO Analytics{% endblock %}
+
+{% block extra_css %}
+<style>
+    .student-table {
+        font-size: 0.9rem;
+    }
+    .student-hash {
+        font-family: 'Courier New', monospace;
+    }
+    .badge-custom {
+        margin: 2px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <h1 class="display-5">Visao do Cohort</h1>
+        <p class="lead">Heatmap de Success Rate por Estudante e Tarefa</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                Heatmap de Success Rate
+            </div>
+            <div class="card-body">
+                {{ heatmap_html|safe }}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                Lista de Estudantes
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover student-table">
+                        <thead>
+                            <tr>
+                                <th>Estudante (Hash)</th>
+                                <th>Total de Eventos</th>
+                                <th>Tarefas Tentadas</th>
+                                <th>Success Rate Medio</th>
+                                <th>Sessoes</th>
+                                <th>Acoes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for student in students %}
+                            <tr>
+                                <td class="student-hash">
+                                    <a href="/student/{{ student.student_hash }}">
+                                        {{ student.student_hash[:8] }}...
+                                    </a>
+                                </td>
+                                <td>{{ student.total_events }}</td>
+                                <td>{{ student.total_tasks }}</td>
+                                <td>
+                                    {% if student.avg_success_rate is not none %}
+                                        <span class="badge 
+                                            {% if student.avg_success_rate >= 0.7 %}bg-success
+                                            {% elif student.avg_success_rate >= 0.4 %}bg-warning
+                                            {% else %}bg-danger{% endif %} badge-custom">
+                                            {{ (student.avg_success_rate * 100)|round(1) }}%
+                                        </span>
+                                    {% else %}
+                                        <span class="badge bg-secondary badge-custom">N/A</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ student.total_sessions }}</td>
+                                <td>
+                                    <a href="/student/{{ student.student_hash }}" class="btn btn-sm btn-primary">
+                                        Ver Detalhes
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

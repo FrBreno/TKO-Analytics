@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block title %}Task {{ task_id }} - TKO Analytics{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stat-card {
+        background: white;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 20px;
+        text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 15px;
+    }
+    .stat-value {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #3498db;
+    }
+    .stat-label {
+        font-size: 0.9rem;
+        color: #666;
+        margin-top: 5px;
+    }
+    .student-table {
+        font-size: 0.9rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <h1 class="display-5">Analise de Tarefa</h1>
+        <p class="lead">
+            <span class="badge bg-info" style="font-size: 1.2rem;">{{ task_id }}</span>
+        </p>
+        <a href="/cohort" class="btn btn-sm btn-outline-secondary">&larr; Voltar para Cohort</a>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.total_students }}</div>
+            <div class="stat-label">Estudantes</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.total_events }}</div>
+            <div class="stat-label">Total de Eventos</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-value">{{ (stats.avg_success_rate * 100)|round(1) }}%</div>
+            <div class="stat-label">Success Rate Medio</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="stat-card">
+            <div class="stat-value">{{ stats.avg_attempts|round(1) }}</div>
+            <div class="stat-label">Tentativas Medias</div>
+        </div>
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                Distribuicao de Success Rate
+            </div>
+            <div class="card-body">
+                {{ histogram_html|safe }}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                Estudantes que Trabalharam nesta Tarefa
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover student-table">
+                        <thead>
+                            <tr>
+                                <th>Estudante (Hash)</th>
+                                <th>Total de Eventos</th>
+                                <th>Success Rate</th>
+                                <th>Tempo Ativo (h)</th>
+                                <th>Acoes</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for student in students %}
+                            <tr>
+                                <td style="font-family: 'Courier New', monospace;">
+                                    <a href="/student/{{ student.student_hash }}">
+                                        {{ student.student_hash[:8] }}...
+                                    </a>
+                                </td>
+                                <td>{{ student.total_events }}</td>
+                                <td>
+                                    {% if student.success_rate is not none %}
+                                        <span class="badge 
+                                            {% if student.success_rate >= 0.7 %}bg-success
+                                            {% elif student.success_rate >= 0.4 %}bg-warning
+                                            {% else %}bg-danger{% endif %}">
+                                            {{ (student.success_rate * 100)|round(1) }}%
+                                        </span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">N/A</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ student.time_active|round(2) }}</td>
+                                <td>
+                                    <a href="/student/{{ student.student_hash }}" class="btn btn-sm btn-primary">
+                                        Ver Timeline
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

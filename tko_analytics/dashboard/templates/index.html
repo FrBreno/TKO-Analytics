@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}Home - TKO Analytics{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <h1 class="display-4">TKO Analytics Dashboard</h1>
+        <p class="lead">Sistema de analise de telemetria educacional com Learning Analytics e Process Mining</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-3">
+        <div class="card metric-card">
+            <div class="card-body">
+                <div class="metric-value">{{ stats.total_events }}</div>
+                <div class="metric-label">Total de Eventos</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card metric-card">
+            <div class="card-body">
+                <div class="metric-value">{{ stats.total_students }}</div>
+                <div class="metric-label">Estudantes</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card metric-card">
+            <div class="card-body">
+                <div class="metric-value">{{ stats.total_tasks }}</div>
+                <div class="metric-label">Tarefas</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card metric-card">
+            <div class="card-body">
+                <div class="metric-value">{{ stats.total_sessions }}</div>
+                <div class="metric-label">Sessoes de Trabalho</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                Visoes Disponiveis
+            </div>
+            <div class="card-body">
+                <div class="list-group">
+                    <a href="/cohort" class="list-group-item list-group-item-action">
+                        <h5 class="mb-1">Visao do Cohort</h5>
+                        <p class="mb-1">Heatmap de metricas por estudante e tarefa</p>
+                    </a>
+                    <a href="#" class="list-group-item list-group-item-action" onclick="alert('Selecione um estudante na visao de Cohort'); return false;">
+                        <h5 class="mb-1">Timeline do Estudante</h5>
+                        <p class="mb-1">Historico detalhado de eventos e sessoes</p>
+                    </a>
+                    <a href="#" class="list-group-item list-group-item-action" onclick="alert('Selecione uma tarefa na visao de Cohort'); return false;">
+                        <h5 class="mb-1">Analise de Tarefa</h5>
+                        <p class="mb-1">Estatisticas agregadas por tarefa</p>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                Sobre o Sistema
+            </div>
+            <div class="card-body">
+                <h5>TKO Analytics</h5>
+                <p>Sistema de analise de telemetria educacional desenvolvido para processar logs do TKO (Test Knowledge Online).</p>
+                
+                <h6 class="mt-3">Funcionalidades:</h6>
+                <ul>
+                    <li>Pipeline ETL completo (Parse, Validate, Load)</li>
+                    <li>Deteccao automatica de sessoes de trabalho</li>
+                    <li>12 metricas pedagogicas calculadas</li>
+                    <li>Exportacao XES para Process Mining</li>
+                    <li>Visualizacoes interativas com Plotly</li>
+                </ul>
+                
+                <h6 class="mt-3">Tecnologias:</h6>
+                <span class="badge bg-primary badge-custom">Python 3.13</span>
+                <span class="badge bg-success badge-custom">Flask</span>
+                <span class="badge bg-info badge-custom">SQLite</span>
+                <span class="badge bg-warning badge-custom">Plotly</span>
+                <span class="badge bg-danger badge-custom">PM4Py</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

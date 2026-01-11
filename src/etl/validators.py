@@ -10,7 +10,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from typing import List, Set, Dict, Any, Optional
 
-from tko_analytics.models import BaseEvent, ExecEvent, SelfEvent
+from src.models import BaseEvent, ExecEvent, SelfEvent
 
 logger = structlog.get_logger()
 

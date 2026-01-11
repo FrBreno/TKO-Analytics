@@ -52,7 +52,7 @@ Repository = "https://github.com/FrBreno/TKO-Analytics"
 Issues = "https://github.com/FrBreno/TKO-Analytics/issues"
 
 [project.scripts]
-tko-analytics = "tko_analytics.cli:main"
+tko-analytics = "src.cli:main"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
@@ -60,7 +60,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["tko_analytics*"]
+include = ["src*"]
 exclude = ["tests*", "docs*"]
 
 # Pytest configuration
@@ -71,7 +71,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
     "-v",
-    "--cov=tko_analytics",
+    "--cov=src",
     "--cov-report=html",
     "--cov-report=term-missing",
     "--cov-report=xml",

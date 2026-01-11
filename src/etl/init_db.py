@@ -12,7 +12,7 @@ from pathlib import Path
 logger = structlog.get_logger()
 
 
-def init_database(db_path: str = "./data/tko_analytics.db") -> None:
+def init_database(db_path: str = "./data/src.db") -> None:
     """
     Inicializa banco de dados SQLite com schema completo.
     
@@ -170,5 +170,5 @@ def init_database(db_path: str = "./data/tko_analytics.db") -> None:
 
 
 if __name__ == "__main__":
-    db_path = os.getenv("TKO_DB_PATH", "./data/tko_analytics.db")
+    db_path = os.getenv("TKO_DB_PATH", "./data/src.db")
     init_database(db_path)

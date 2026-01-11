@@ -13,7 +13,7 @@ import structlog
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from tko_analytics.models import BaseEvent, ExecEvent, MoveEvent, SelfEvent
+from src.models import BaseEvent, ExecEvent, MoveEvent, SelfEvent
 
 logger = structlog.get_logger()
 

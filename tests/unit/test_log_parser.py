@@ -8,9 +8,9 @@ import csv
 import pytest
 from pathlib import Path
 
-from tko_analytics.parsers import LogParser
-from tko_analytics.parsers.log_parser import ParseError
-from tko_analytics.models import ExecEvent, MoveEvent, SelfEvent
+from src.parsers import LogParser
+from src.parsers.log_parser import ParseError
+from src.models import ExecEvent, MoveEvent, SelfEvent
 
 
 @pytest.fixture

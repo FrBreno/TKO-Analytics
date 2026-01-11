@@ -8,9 +8,9 @@ import pytest
 import sqlite3
 from datetime import datetime, timedelta
 
-from tko_analytics.etl.init_db import init_database
-from tko_analytics.etl.loader import SQLiteLoader, LoadError
-from tko_analytics.models import ExecEvent, MoveEvent, SelfEvent
+from src.etl.init_db import init_database
+from src.etl.loader import SQLiteLoader, LoadError
+from src.models import ExecEvent, MoveEvent, SelfEvent
 
 
 @pytest.fixture

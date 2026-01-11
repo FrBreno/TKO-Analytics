@@ -8,7 +8,7 @@ import pytest
 from datetime import datetime
 from pydantic import ValidationError
 
-from tko_analytics.models import BaseEvent, ExecEvent, MoveEvent, SelfEvent
+from src.models import BaseEvent, ExecEvent, MoveEvent, SelfEvent
 
 
 class TestBaseEvent:

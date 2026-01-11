@@ -31,7 +31,7 @@ def create_app(db_path: str) -> Flask:
     app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY')
     
     # Registra rotas
-    from tko_analytics.dashboard import routes
+    from src.dashboard import routes
     routes.register_routes(app)
     
     logger.info("flask_app_created", db_path=db_path)

@@ -5,10 +5,10 @@ Testes para MetricsEngine.
 import pytest
 from datetime import datetime, timedelta
 
-from tko_analytics.models.events import ExecEvent, MoveEvent, SelfEvent
-from tko_analytics.etl.session_detector import SessionDetector
-from tko_analytics.metrics import MetricsEngine, get_metrics_from_db
-from tko_analytics.etl.init_db import init_database
+from src.models.events import ExecEvent, MoveEvent, SelfEvent
+from src.etl.session_detector import SessionDetector
+from src.metrics import MetricsEngine, get_metrics_from_db
+from src.etl.init_db import init_database
 
 
 @pytest.fixture

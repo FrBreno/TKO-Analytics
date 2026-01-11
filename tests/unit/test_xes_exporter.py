@@ -7,10 +7,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from tko_analytics.models.events import ExecEvent, MoveEvent, SelfEvent
-from tko_analytics.etl.loader import SQLiteLoader
-from tko_analytics.etl.init_db import init_database
-from tko_analytics.exporters import XESExporter, XESExportError, export_to_xes
+from src.models.events import ExecEvent, MoveEvent, SelfEvent
+from src.etl.loader import SQLiteLoader
+from src.etl.init_db import init_database
+from src.exporters import XESExporter, XESExportError, export_to_xes
 
 
 @pytest.fixture

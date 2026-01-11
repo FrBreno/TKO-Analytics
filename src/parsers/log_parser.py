@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Union, Optional
 
-from tko_analytics.models import BaseEvent, ExecEvent, MoveEvent, SelfEvent
+from src.models import BaseEvent, ExecEvent, MoveEvent, SelfEvent
 
 logger = structlog.get_logger()
 

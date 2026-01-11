@@ -10,18 +10,18 @@ __author__ = "Francisco Breno"
 __email__ = "fbreno.dev@gmail.com"
 
 # Facilitadores de importação para usuários do pacote
-from tko_analytics.models import BaseEvent, ExecEvent, MoveEvent, SelfEvent
-from tko_analytics.parsers import LogParser
-from tko_analytics.etl import (
+from src.models import BaseEvent, ExecEvent, MoveEvent, SelfEvent
+from src.parsers import LogParser
+from src.etl import (
     EventValidator,
     ValidationReport,
     SQLiteLoader,
     SessionDetector,
     Session
 )
-from tko_analytics.metrics import MetricsEngine, MetricResult
-from tko_analytics.exporters import XESExporter, export_to_xes
-from tko_analytics.process_mining import ProcessAnalyzer, ProcessAnalysisResult
+from src.metrics import MetricsEngine, MetricResult
+from src.exporters import XESExporter, export_to_xes
+from src.process_mining import ProcessAnalyzer, ProcessAnalysisResult
 
 __all__ = [
     "__version__",

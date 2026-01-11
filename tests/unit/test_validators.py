@@ -7,8 +7,8 @@ Testa validações de integridade e consistência de eventos TKO.
 import pytest
 from datetime import datetime, timedelta
 
-from tko_analytics.etl import EventValidator, ValidationError, ValidationReport
-from tko_analytics.models import ExecEvent, MoveEvent, SelfEvent
+from src.etl import EventValidator, ValidationError, ValidationReport
+from src.models import ExecEvent, MoveEvent, SelfEvent
 
 
 class TestValidationReport:

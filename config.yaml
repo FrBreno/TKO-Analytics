@@ -1,0 +1,144 @@
+# TKO-Analytics
+version: "1.0.0"
+
+# Configuração de ETL
+etl:
+  session_timeout_minutes: 30  # Gap máximo dentro de uma sessão
+  snapshot_frequency_patches: 50  # Criar snapshot a cada N patches
+  snapshot_frequency_minutes: 30  # OU a cada N minutos
+  batch_size: 1000  # Eventos processados por batch
+  max_workers: 4  # Processos paralelos para ETL
+
+# Configuração do Banco de Dados (SQLite)
+database:
+  path: "./data/tko_analytics.db"
+  timeout: 30
+  check_same_thread: false
+  wal_mode: true
+
+# Cache Configuration (Opcional)
+cache:
+  enabled: false
+  ttl_seconds: 3600
+  max_size: 1000
+
+# Configuração do Armazenamento de Objetos (Local apenas)
+storage:
+  type: "local"
+  local_path: "./storage/snapshots"
+  compression: "gzip"
+
+# Privacidade e Segurança
+privacy:
+  salt_env_var: "TKO_SALT"
+  retention_years: 2
+  pseudonymization_algorithm: "sha256"
+  
+# Configuração do Painel (Local)
+dashboard:
+  host: "127.0.0.1"
+  port: 8000
+  auth_enabled: false
+
+# Configuração de Log
+logging:
+  level: "INFO"  # DEBUG, INFO, AVISO, ERRO, CRÍTICO
+  format: "json"  # 'json' ou 'text'
+  output: "both"  # 'stdout', 'file', ou 'both'
+  file_path: "./logs/tko_analytics.log"
+  rotation: "daily"  # 'daily', 'size', ou 'time'
+  retention_days: 30
+  
+  # Níveis específicos por módulo
+  loggers:
+    tko_analytics.etl: "DEBUG"
+    tko_analytics.api: "INFO"
+    tko_analytics.metrics: "INFO"
+
+# Limiares de Métricas (para alertas)
+metrics:
+  thresholds:
+    # Temporal
+    time_active_max_hours: 8
+    time_to_first_success_max_hours: 6
+    
+    # Performance
+    attempts_warning: 20
+    attempts_critical: 30
+    final_success_rate_min: 50
+    
+    # Comportamental
+    rework_ratio_high: 0.6
+    edit_exec_ratio_low: 0.5
+    edit_exec_ratio_high: 2.0
+    
+    # Autoavaliação
+    autonomy_low: 3
+    autonomy_high: 8
+    
+  # Detecção de padrões comportamentais
+  behavioral_patterns:
+    cramming:
+      enabled: true
+      last_session_ratio_min: 0.7
+      hours_before_deadline_max: 24
+    
+    trial_and_error:
+      enabled: true
+      min_attempts: 15
+      avg_oscillation_threshold: 20
+      improvement_slope_max: 2
+    
+    instant_success:
+      enabled: true
+      max_attempts: 3
+      min_first_rate: 75
+      max_time_minutes: 30
+
+# Configuração de Mineração de Processos
+process_mining:
+  algorithm: "inductive"  # 'inductive', 'heuristic', 'alpha'
+  noise_threshold: 0.2
+  
+  # Exportação XES
+  xes:
+    include_attributes: true
+    include_metrics: true
+    trace_attributes:
+      - time_active_seconds
+      - attempts_to_success
+      - final_success_rate
+      - sessions_count
+      - autonomy_avg
+    
+  # Verificação de conformidade
+  conformance:
+    enabled: true
+    fitness_threshold_warning: 0.7
+    precision_threshold_warning: 0.6
+
+# Flags de recurso
+features:
+  enable_pm_export: true
+  enable_code_reconstruction: true
+  enable_behavioral_patterns: true
+  enable_cohort_comparison: true
+  enable_realtime_dashboard: false
+
+# Sobrescritas específicas por ambiente
+environments:
+  development:
+    logging:
+      level: "DEBUG"
+    api:
+      workers: 1
+    database:
+      echo: true
+  
+  production:
+    logging:
+      level: "WARNING"
+    api:
+      workers: 4
+    features:
+      enable_realtime_dashboard: false

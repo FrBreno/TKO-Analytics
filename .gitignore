@@ -88,3 +88,8 @@ frontend/coverage/
 # Documentation build
 docs/_build/
 site/
+
+# Tests Demo files
+tests/demo_files/output/
+*.csv
+*.xes

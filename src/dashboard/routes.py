@@ -20,17 +20,35 @@ def get_db():
     return conn
 
 
+def has_events_in_database() -> bool:
+    """
+    Verifica se há eventos no banco de dados.
+    
+    Returns:
+        True se houver pelo menos um evento, False caso contrário
+    """
+    conn = get_db()
+    count = conn.execute('SELECT COUNT(*) as count FROM events').fetchone()['count']
+    conn.close()
+    return count > 0
+
+
 def register_routes(app: Flask):
     """Registra todas as rotas no app Flask."""
     
     @app.route('/')
     def index():
         """Homepage com visão geral."""
+        # Verificar se banco está vazio
+        if not has_events_in_database():
+            return render_template('setup_wizard.html')
+        
         conn = get_db()
+        total_events = conn.execute('SELECT COUNT(*) as count FROM events').fetchone()['count']
         
         # Estatísticas gerais
         stats = {
-            'total_events': conn.execute('SELECT COUNT(*) as count FROM events').fetchone()['count'],
+            'total_events': total_events,
             'total_students': conn.execute('SELECT COUNT(DISTINCT student_hash) as count FROM events').fetchone()['count'],
             'total_tasks': conn.execute('SELECT COUNT(DISTINCT task_id) as count FROM events').fetchone()['count'],
             'total_sessions': conn.execute('SELECT COUNT(*) as count FROM sessions').fetchone()['count'],
@@ -375,12 +393,21 @@ def register_routes(app: Flask):
         if request.method == 'POST':
             root_dir = request.form.get('root_dir')
             output_name = request.form.get('output_name')
+            import_mode = request.form.get('import_mode', 'incremental')
+            
+            # Verificar se há dados no banco
+            has_data = has_events_in_database()
+            
+            # Validar modo incremental apenas se houver dados
+            if import_mode == 'incremental' and not has_data:
+                flash('Modo incremental não disponível: banco de dados vazio. Use modo limpa para primeira importação.', 'warning')
+                return render_template('import.html', has_data=has_data)
             
             # Validar diretório
             root_path = Path(root_dir)
             if not root_path.exists():
                 flash('Diretório não encontrado!', 'danger')
-                return render_template('import.html')
+                return render_template('import.html', has_data=has_events_in_database())
             
             try:
                 # Importar módulos
@@ -388,8 +415,17 @@ def register_routes(app: Flask):
                 from src.tko_integration.transformer import TKOTransformer
                 from src.tko_integration.validator import DataValidator
                 
+                # Se modo limpo, limpar diretório de saída
+                output_dir = Path(f"tests/real_data/{output_name}")
+                if import_mode == 'clean':
+                    if output_dir.exists():
+                        import shutil
+                        logger.info("Cleaning output directory", path=str(output_dir))
+                        shutil.rmtree(output_dir)
+                        flash('Diretório de saída limpo.', 'info')
+                
                 # Executar scan
-                logger.info("Starting TKO data scan", root_dir=str(root_path))
+                logger.info("Starting TKO data scan", root_dir=str(root_path), mode=import_mode)
                 scanner = ClassroomScanner()
                 scan = scanner.scan_directory(root_path)
                 
@@ -399,34 +435,151 @@ def register_routes(app: Flask):
                            valid_repos=scan.valid_repos)
                 
                 # Transformar para CSV
-                output_dir = Path(f"tests/real_data/{output_name}")
                 output_dir.mkdir(parents=True, exist_ok=True)
                 csv_path = output_dir / "events.csv"
+                
+                # Verificar se arquivo já existe (modo incremental)
+                file_exists = csv_path.exists()
+                if file_exists and import_mode == 'incremental':
+                    logger.info("Appending to existing CSV", path=str(csv_path))
+                    flash('Modo incremental: adicionando eventos ao arquivo existente.', 'info')
                 
                 salt = os.getenv('STUDENT_ID_SALT', 'default-salt-change-me')
                 transformer = TKOTransformer(salt)
                 
-                logger.info("Transforming to CSV", output=str(csv_path))
-                total_events = transformer.transform_scan_to_csv(scan, csv_path)
+                logger.info("Transforming to CSV", output=str(csv_path), mode=import_mode)
                 
-                logger.info("Transformation complete", events=total_events)
+                # Para modo incremental, usar modo append
+                write_mode = 'append' if (file_exists and import_mode == 'incremental') else 'new'
+                total_events = transformer.transform_scan_to_csv(scan, csv_path, mode=write_mode)
+                
+                logger.info("Transformation complete", events=total_events, mode=import_mode)
                 
                 # Adicionar dados ao resultado
                 scan.total_events = total_events
                 scan.csv_path = str(csv_path)
+                scan.import_mode = import_mode
                 
                 # Gerar relatório de validação
                 validator = DataValidator()
                 report = validator.generate_report(scan)
                 logger.info("Validation report generated", warnings=len(scan.warnings))
                 
-                flash(f'Importação concluída! {total_events} eventos processados.', 'success')
+                mode_msg = 'incremental' if import_mode == 'incremental' else 'limpa'
+                flash(f'Importação {mode_msg} concluída! {total_events} eventos processados.', 'success')
                 
                 return render_template('import.html', scan_result=scan)
                 
             except Exception as e:
                 logger.error("Import failed", error=str(e), exc_info=True)
                 flash(f'Erro durante importação: {str(e)}', 'danger')
-                return render_template('import.html')
+                return render_template('import.html', has_data=has_events_in_database())
         
-        return render_template('import.html')
+        # Verificar se há dados no banco para modo GET
+        return render_template('import.html', has_data=has_events_in_database())
+    
+    
+    @app.route('/clear_database', methods=['POST'])
+    def clear_database():
+        """Limpa todas as tabelas do banco de dados."""
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Desabilitar foreign keys temporariamente
+            cursor.execute("PRAGMA foreign_keys = OFF")
+            
+            # Listar todas as tabelas
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            # Limpar cada tabela
+            for table in tables:
+                if table != 'sqlite_sequence':
+                    cursor.execute(f"DELETE FROM {table}")
+                    logger.info("Table cleared", table=table)
+            
+            # Reabilitar foreign keys
+            cursor.execute("PRAGMA foreign_keys = ON")
+            
+            conn.commit()
+            conn.close()
+            
+            flash('Banco de dados limpo com sucesso! Todas as tabelas foram esvaziadas.', 'success')
+            logger.info("Database cleared successfully")
+            
+        except Exception as e:
+            logger.error("Failed to clear database", error=str(e), exc_info=True)
+            flash(f'Erro ao limpar banco de dados: {str(e)}', 'danger')
+        
+        # Redireciona para home (mostrar wizard de configuração)
+        return render_template('setup_wizard.html')
+    
+    
+    @app.route('/api/browse_directory', methods=['POST'])
+    def browse_directory():
+        """API para navegar pelo sistema de arquivos."""
+        import json
+        from pathlib import Path
+        
+        data = request.get_json()
+        current_path = data.get('path', '')
+        
+        try:
+            # Se path vazio, listar drives no Windows ou root no Unix
+            if not current_path:
+                import platform
+                if platform.system() == 'Windows':
+                    import string
+                    drives = []
+                    for letter in string.ascii_uppercase:
+                        drive = f"{letter}:\\"
+                        if Path(drive).exists():
+                            drives.append({
+                                'name': drive,
+                                'path': drive,
+                                'is_dir': True
+                            })
+                    return jsonify({
+                        'current_path': '',
+                        'parent_path': None,
+                        'items': drives
+                    })
+                else:
+                    current_path = '/'
+            
+            path = Path(current_path)
+            
+            if not path.exists():
+                return jsonify({'error': 'Diretório não encontrado'}), 404
+            
+            if not path.is_dir():
+                return jsonify({'error': 'Caminho não é um diretório'}), 400
+            
+            # Listar itens do diretório
+            items = []
+            try:
+                for item in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                    if item.is_dir():
+                        # Filtrar diretórios ocultos e sistema
+                        if not item.name.startswith('.') and not item.name.startswith('$'):
+                            items.append({
+                                'name': item.name,
+                                'path': str(item),
+                                'is_dir': True
+                            })
+            except PermissionError:
+                pass
+            
+            # Parent path
+            parent_path = str(path.parent) if path.parent != path else None
+            
+            return jsonify({
+                'current_path': str(path),
+                'parent_path': parent_path,
+                'items': items
+            })
+            
+        except Exception as e:
+            logger.error("Browse directory failed", error=str(e), exc_info=True)
+            return jsonify({'error': str(e)}), 500

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuração Inicial - TKO Analytics</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <link href="{{ url_for('static', filename='wizard.css') }}" rel="stylesheet">
+</head>
+<body class="wizard-page">
+    <div class="wizard-container">
+        <div class="wizard-icon">
+            <i class="bi bi-rocket-takeoff"></i>
+        </div>
+        <h1 class="wizard-title">Bem-vindo ao TKO Analytics!</h1>
+        <p class="wizard-subtitle">
+            Configure sua primeira importação de dados para começar a analisar o desempenho dos estudantes.
+        </p>
+
+        <div class="step-card">
+            <div class="d-flex align-items-start">
+                <span class="step-number">1</span>
+                <div>
+                    <h5 class="mb-2">📁 Preparar Dados</h5>
+                    <p class="text-muted mb-0">
+                        Organize os dados do GitHub Classroom exportados pelo TKO em um diretório acessível.
+                        A estrutura esperada é: <code>turma/bloco-x-submissions/estudante/.tko/</code>
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="step-card">
+            <div class="d-flex align-items-start">
+                <span class="step-number">2</span>
+                <div>
+                    <h5 class="mb-2">🔄 Importar Dados TKO</h5>
+                    <p class="text-muted mb-0">
+                        Use a interface de importação para escanear o diretório e transformar os dados 
+                        no formato CSV necessário para o pipeline ETL.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="step-card">
+            <div class="d-flex align-items-start">
+                <span class="step-number">3</span>
+                <div>
+                    <h5 class="mb-2">⚙️ Processar com ETL</h5>
+                    <p class="text-muted mb-0">
+                        Após a importação, execute o pipeline ETL para gerar as métricas e sessões 
+                        que alimentarão os dashboards analíticos.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="step-card">
+            <div class="d-flex align-items-start">
+                <span class="step-number">4</span>
+                <div>
+                    <h5 class="mb-2">📊 Explorar Dashboards</h5>
+                    <p class="text-muted mb-0">
+                        Visualize métricas de engajamento, performance, padrões temporais e 
+                        análise individual de estudantes.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="text-center mt-4">
+            <a href="/import" class="btn btn-primary-custom btn-lg">
+                <i class="bi bi-arrow-right-circle me-2"></i>
+                Começar Importação
+            </a>
+        </div>
+
+        <div class="alert alert-info mt-4" role="alert">
+            <i class="bi bi-info-circle me-2"></i>
+            <strong>Dica:</strong> Você pode importar dados incrementalmente a qualquer momento 
+            através do menu do dashboard.
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

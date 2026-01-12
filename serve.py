@@ -12,6 +12,7 @@ import sys
 import argparse
 from pathlib import Path
 from src.dashboard import run_server
+from src.etl.init_db import init_database
 
 
 def main():
@@ -46,15 +47,21 @@ def main():
 
     args = parser.parse_args()
 
-    # Check if database exists
+    # Verificar se o banco de dados existe, senão criar vazio
     db_path = Path(args.database)
     if not db_path.exists():
-        print(f"ERROR: Database not found: {db_path.absolute()}")
-        print("\nPlease run the ETL pipeline first to create the database.")
-        print("Example:")
-        print("  python tests/demo_files/create_demo_db.py")
-        print("  python tests/demo_files/demo_pipeline.py")
-        sys.exit(1)
+        print(f"Database not found: {db_path.absolute()}")
+        print(f"Creating empty database...")
+        try:
+            init_database(str(db_path))
+            print(f"Empty database created successfully!")
+            print(f"\n💡 Next steps:")
+            print(f"   1. Visit http://{args.host}:{args.port}/import")
+            print(f"   2. Configure and import TKO data")
+            print(f"   3. Process with ETL pipeline to generate analytics\n")
+        except Exception as e:
+            print(f"Error creating database: {e}")
+            sys.exit(1)
 
     # Start server
     print(f"Starting TKO Analytics Dashboard...")

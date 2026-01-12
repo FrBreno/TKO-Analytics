@@ -105,14 +105,19 @@
                             <label for="root_dir" class="form-label">
                                 <i class="fas fa-folder"></i> Diretório Raiz
                             </label>
-                            <input 
-                                type="text" 
-                                class="form-control form-control-lg" 
-                                id="root_dir" 
-                                name="root_dir" 
-                                placeholder="D:\turmas\2024_2\"
-                                required
-                            >
+                            <div class="input-group input-group-lg">
+                                <input 
+                                    type="text" 
+                                    class="form-control" 
+                                    id="root_dir" 
+                                    name="root_dir" 
+                                    placeholder="D:\turmas\2024_2\"
+                                    required
+                                >
+                                <button class="btn btn-outline-secondary" type="button" id="browseBtn" data-bs-toggle="modal" data-bs-target="#directoryBrowserModal">
+                                    <i class="fas fa-folder-open"></i> Browse
+                                </button>
+                            </div>
                             <div class="form-text">
                                 Caminho absoluto para a pasta contendo as turmas do GitHub Classroom
                             </div>
@@ -132,6 +137,32 @@
                             >
                             <div class="form-text">
                                 Identificador único para esta cohort
+                            </div>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label for="import_mode" class="form-label">
+                                <i class="fas fa-cog"></i> Modo de Importação
+                            </label>
+                            <select class="form-select" id="import_mode" name="import_mode">
+                                {% if has_data %}
+                                <option value="incremental" selected>Incremental (adicionar ao existente)</option>
+                                <option value="clean">Limpa (substituir dados)</option>
+                                {% else %}
+                                <option value="incremental" disabled>Incremental (adicionar ao existente) - Indisponível: banco vazio</option>
+                                <option value="clean" selected>Limpa (substituir dados)</option>
+                                {% endif %}
+                            </select>
+                            <div class="form-text">
+                                {% if has_data %}
+                                Modo incremental: adiciona eventos novos aos dados existentes<br>
+                                Modo limpa: apaga dados antigos desta cohort antes de importar
+                                {% else %}
+                                <span class="text-warning">
+                                    <i class="fas fa-info-circle"></i> 
+                                    Modo incremental indisponível - nenhum dado no banco. Use modo limpa para primeira importação.
+                                </span>
+                                {% endif %}
                             </div>
                         </div>
                         
@@ -198,11 +229,224 @@
     {% endif %}
 </div>
 
+<div class="modal fade directory-browser-modal" id="directoryBrowserModal" tabindex="-1" aria-labelledby="directoryBrowserLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title" id="directoryBrowserLabel">
+                    <i class="fas fa-folder-tree"></i> Selecionar Diretório
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <nav aria-label="breadcrumb">
+                    <ol class="breadcrumb" id="breadcrumb">
+                        <li class="breadcrumb-item"><a href="#" data-path="">Raiz</a></li>
+                    </ol>
+                </nav>
+                
+                <div class="mb-3">
+                    <button class="btn btn-sm btn-outline-secondary" id="backBtn" disabled>
+                        <i class="fas fa-arrow-left"></i> Voltar
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary" id="refreshBtn">
+                        <i class="fas fa-sync-alt"></i> Atualizar
+                    </button>
+                </div>
+                
+                <div id="loadingSpinner" class="text-center py-5" style="display: none;">
+                    <div class="spinner-border text-primary" role="status">
+                        <span class="visually-hidden">Carregando...</span>
+                    </div>
+                    <p class="mt-2 text-muted">Carregando diretórios...</p>
+                </div>
+                
+                <div id="errorMessage" class="alert alert-danger" style="display: none;"></div>
+                
+                <div id="directoryList" style="max-height: 400px; overflow-y: auto;">
+                </div>
+                
+                <div class="mt-3">
+                    <label class="form-label"><strong>Caminho selecionado:</strong></label>
+                    <input type="text" class="form-control" id="selectedPath" readonly>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-primary" id="selectBtn">
+                    <i class="fas fa-check"></i> Selecionar
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 document.getElementById('importForm')?.addEventListener('submit', function() {
     const btn = document.getElementById('submitBtn');
     btn.disabled = true;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processando...';
+});
+
+let currentPath = '';
+
+function showLoading() {
+    document.getElementById('loadingSpinner').style.display = 'block';
+    document.getElementById('directoryList').style.display = 'none';
+    document.getElementById('errorMessage').style.display = 'none';
+}
+
+function hideLoading() {
+    document.getElementById('loadingSpinner').style.display = 'none';
+    document.getElementById('directoryList').style.display = 'block';
+}
+
+function showError(message) {
+    const errorDiv = document.getElementById('errorMessage');
+    errorDiv.textContent = message;
+    errorDiv.style.display = 'block';
+    document.getElementById('loadingSpinner').style.display = 'none';
+}
+
+async function loadDirectory(path) {
+    showLoading();
+    
+    try {
+        const response = await fetch('/api/browse_directory', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ path: path })
+        });
+        
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Erro ao carregar diretório');
+        }
+        
+        const data = await response.json();
+        currentPath = data.current_path;
+        
+        // Atualizar breadcrumb
+        updateBreadcrumb(currentPath);
+        
+        // Atualizar botão voltar e campo selecionado
+        document.getElementById('backBtn').disabled = !data.parent_path;
+        document.getElementById('backBtn').onclick = () => loadDirectory(data.parent_path);
+        document.getElementById('selectedPath').value = currentPath;
+        
+        // Renderizar lista de diretórios
+        const listDiv = document.getElementById('directoryList');
+        listDiv.innerHTML = '';
+        
+        if (data.items.length === 0) {
+            listDiv.innerHTML = '<p class="text-muted text-center py-4">Nenhum diretório encontrado</p>';
+        } else {
+            const listGroup = document.createElement('div');
+            listGroup.className = 'list-group';
+            
+            data.items.forEach(item => {
+                const itemDiv = document.createElement('a');
+                itemDiv.href = '#';
+                itemDiv.className = 'list-group-item list-group-item-action d-flex align-items-center';
+                itemDiv.innerHTML = `
+                    <i class="fas fa-folder text-warning me-3"></i>
+                    <span class="flex-grow-1">${item.name}</span>
+                    <i class="fas fa-chevron-right text-muted"></i>
+                `;
+                itemDiv.onclick = (e) => {
+                    e.preventDefault();
+                    loadDirectory(item.path);
+                };
+                listGroup.appendChild(itemDiv);
+            });
+            
+            listDiv.appendChild(listGroup);
+        }
+        
+        hideLoading();
+        
+    } catch (error) {
+        showError(error.message);
+    }
+}
+
+function updateBreadcrumb(path) {
+    const breadcrumb = document.getElementById('breadcrumb');
+    breadcrumb.innerHTML = '';
+    
+    if (!path) {
+        breadcrumb.innerHTML = '<li class="breadcrumb-item active">Raiz</li>';
+        return;
+    }
+    
+    // Criar item raiz
+    const rootItem = document.createElement('li');
+    rootItem.className = 'breadcrumb-item';
+    const rootLink = document.createElement('a');
+    rootLink.href = '#';
+    rootLink.textContent = 'Raiz';
+    rootLink.onclick = (e) => {
+        e.preventDefault();
+        loadDirectory('');
+    };
+    rootItem.appendChild(rootLink);
+    breadcrumb.appendChild(rootItem);
+    
+    // Separar path em partes
+    const parts = path.split(/[\\/]/).filter(p => p);
+    let accumulatedPath = '';
+    
+    parts.forEach((part, index) => {
+        accumulatedPath += part;
+        if (index < parts.length - 1) {
+            accumulatedPath += '\\';
+        }
+        
+        const item = document.createElement('li');
+        item.className = index === parts.length - 1 ? 'breadcrumb-item active' : 'breadcrumb-item';
+        
+        if (index === parts.length - 1) {
+            item.textContent = part;
+        } else {
+            const link = document.createElement('a');
+            link.href = '#';
+            link.textContent = part;
+            const pathCopy = accumulatedPath + (index < parts.length - 1 ? '\\' : '');
+            link.onclick = (e) => {
+                e.preventDefault();
+                loadDirectory(pathCopy);
+            };
+            item.appendChild(link);
+        }
+        
+        breadcrumb.appendChild(item);
+    });
+}
+
+// Inicializar modal
+document.getElementById('directoryBrowserModal')?.addEventListener('shown.bs.modal', function() {
+    const currentValue = document.getElementById('root_dir').value;
+    if (currentValue) {
+        loadDirectory(currentValue);
+    } else {
+        loadDirectory('');
+    }
+});
+
+// Botão refresh
+document.getElementById('refreshBtn')?.addEventListener('click', function() {
+    loadDirectory(currentPath);
+});
+
+// Botão selecionar
+document.getElementById('selectBtn')?.addEventListener('click', function() {
+    const selectedPath = document.getElementById('selectedPath').value;
+    if (selectedPath) {
+        document.getElementById('root_dir').value = selectedPath;
+        bootstrap.Modal.getInstance(document.getElementById('directoryBrowserModal')).hide();
+    }
 });
 </script>
 {% endblock %}

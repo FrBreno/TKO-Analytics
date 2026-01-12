@@ -100,7 +100,8 @@ class TKOTransformer:
         self, 
         scan: ClassroomScan, 
         output_path: Path,
-        include_tracking: bool = False
+        include_tracking: bool = False,
+        mode: str = 'new'
     ) -> int:
         """
         Transforma varredura completa para arquivo CSV.
@@ -109,6 +110,7 @@ class TKOTransformer:
             scan: Resultado do ClassroomScan
             output_path: Caminho para arquivo CSV de saída
             include_tracking: Se deve incluir dados de rastreamento (padrão: False)
+            mode: 'new' para criar novo arquivo, 'append' para adicionar ao existente
             
         Returns:
             Número de eventos escritos
@@ -150,10 +152,17 @@ class TKOTransformer:
         
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        with open(output_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(all_rows)
+        # Modo append: adiciona sem cabeçalho se arquivo existe
+        if mode == 'append' and output_path.exists():
+            with open(output_path, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writerows(all_rows)
+        else:
+            # Modo new: cria novo arquivo com cabeçalho
+            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(all_rows)
         
         return total_events
     

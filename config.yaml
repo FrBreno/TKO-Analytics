@@ -30,7 +30,7 @@ storage:
 
 # Privacidade e Segurança
 privacy:
-  salt_env_var: "TKO_SALT"
+  salt_env_var: "STUDENT_ID_SALT"
   retention_years: 2
   pseudonymization_algorithm: "sha256"
   

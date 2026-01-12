@@ -12,8 +12,19 @@ import os
 import sqlite3
 import structlog
 from flask import Flask
+from pathlib import Path
 
 logger = structlog.get_logger()
+
+# Carrega variáveis de ambiente do arquivo .env
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+        logger.info("[app] - Environment variables loaded from .env file")
+except ImportError:
+    logger.warning("[app] - python-dotenv not installed, .env file not loaded")
 
 
 def create_app(db_path: str) -> Flask:
@@ -28,7 +39,16 @@ def create_app(db_path: str) -> Flask:
     """
     app = Flask(__name__)
     app.config['DB_PATH'] = db_path
-    app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY')
+    
+    # Configurar SECRET_KEY para sessões
+    secret_key = os.getenv('FLASK_SECRET_KEY')
+    if not secret_key:
+        # Gera uma chave aleatória se não houver variável de ambiente
+        import secrets
+        secret_key = secrets.token_hex(32)
+        logger.info("[create_app] - Generated random secret key for Flask sessions")
+    
+    app.config['SECRET_KEY'] = secret_key
     
     # Registra rotas
     from src.dashboard import routes

@@ -56,8 +56,8 @@ def main():
     )
     parser.add_argument(
         "--output-dir",
-        default="tests/real_data",
-        help="Diretório de saída para arquivos CSV e DB (padrão: tests/real_data)"
+        default="data",
+        help="Diretório de saída para arquivos CSV e DB (padrão: data)"
     )
     
     args = parser.parse_args()

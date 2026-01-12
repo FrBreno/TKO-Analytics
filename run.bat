@@ -31,9 +31,6 @@ if errorlevel 1 (
 
 echo [2/2] Iniciando servidor Flask...
 echo.
-echo Dashboard disponivel em: http://localhost:5000
-echo Pressione Ctrl+C para parar o servidor
-echo.
 
 REM Passar argumentos para serve.py (se fornecidos)
 python serve.py %*

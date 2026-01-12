@@ -3,12 +3,16 @@ Rotas do dashboard Flask.
 """
 
 import os
+import csv
 import sqlite3
 import structlog
 import plotly.graph_objects as go
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, render_template, jsonify, abort, current_app, request, flash
+
+from src.parsers.log_parser import LogParser
+from src.etl.loader import SQLiteLoader
 
 logger = structlog.get_logger()
 
@@ -392,7 +396,6 @@ def register_routes(app: Flask):
         """Interface de importação de dados TKO."""
         if request.method == 'POST':
             root_dir = request.form.get('root_dir')
-            output_name = request.form.get('output_name')
             import_mode = request.form.get('import_mode', 'incremental')
             
             # Verificar se há dados no banco
@@ -414,15 +417,24 @@ def register_routes(app: Flask):
                 from src.tko_integration.scanner import ClassroomScanner
                 from src.tko_integration.transformer import TKOTransformer
                 from src.tko_integration.validator import DataValidator
+                from src.parsers.log_parser import LogParser
+                from src.etl.loader import SQLiteLoader
+                import shutil
                 
-                # Se modo limpo, limpar diretório de saída
-                output_dir = Path(f"tests/real_data/{output_name}")
+                # Diretório temporário fixo para CSV (será excluído após importação)
+                output_dir = Path("data/temp_import")
+                csv_path = output_dir / "events.csv"
+                
+                # Se modo limpo, limpar banco de dados
                 if import_mode == 'clean':
-                    if output_dir.exists():
-                        import shutil
-                        logger.info("Cleaning output directory", path=str(output_dir))
-                        shutil.rmtree(output_dir)
-                        flash('Diretório de saída limpo.', 'info')
+                    conn = get_db()
+                    conn.execute("DELETE FROM events")
+                    conn.execute("DELETE FROM metrics")
+                    conn.execute("DELETE FROM sessions")
+                    conn.commit()
+                    conn.close()
+                    logger.info("Database cleared (clean mode)")
+                    flash('Banco de dados limpo.', 'info')
                 
                 # Executar scan
                 logger.info("Starting TKO data scan", root_dir=str(root_path), mode=import_mode)
@@ -436,22 +448,14 @@ def register_routes(app: Flask):
                 
                 # Transformar para CSV
                 output_dir.mkdir(parents=True, exist_ok=True)
-                csv_path = output_dir / "events.csv"
-                
-                # Verificar se arquivo já existe (modo incremental)
-                file_exists = csv_path.exists()
-                if file_exists and import_mode == 'incremental':
-                    logger.info("Appending to existing CSV", path=str(csv_path))
-                    flash('Modo incremental: adicionando eventos ao arquivo existente.', 'info')
                 
                 salt = os.getenv('STUDENT_ID_SALT', 'default-salt-change-me')
                 transformer = TKOTransformer(salt)
                 
-                logger.info("Transforming to CSV", output=str(csv_path), mode=import_mode)
+                logger.info("Transforming to CSV", output=str(csv_path))
                 
-                # Para modo incremental, usar modo append
-                write_mode = 'append' if (file_exists and import_mode == 'incremental') else 'new'
-                total_events = transformer.transform_scan_to_csv(scan, csv_path, mode=write_mode)
+                # Sempre gerar CSV novo
+                total_events = transformer.transform_scan_to_csv(scan, csv_path, mode='new')
                 
                 logger.info("Transformation complete", events=total_events, mode=import_mode)
                 
@@ -465,6 +469,104 @@ def register_routes(app: Flask):
                 report = validator.generate_report(scan)
                 logger.info("Validation report generated", warnings=len(scan.warnings))
                 
+                # Carregar CSV no banco de dados SQLite usando Pydantic + SQLiteLoader
+                try:
+                    logger.info("Loading CSV into database", csv=str(csv_path), db=current_app.config['DB_PATH'])
+                    # Se modo limpo, limpar banco antes
+                    if import_mode == 'clean':
+                        conn = get_db()
+                        conn.execute("DELETE FROM events")
+                        conn.commit()
+                        conn.close()
+                        logger.info("[] - Database cleared before",
+                               csv=str(csv_path), 
+                               db=current_app.config['DB_PATH'],
+                               mode=import_mode)
+                    
+                    # Agrupar eventos por student_id do CSV
+                    events_by_student = {}
+                    with open(csv_path, 'r', encoding='utf-8') as f:
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            student_id = row.get('student_id', 'unknown')
+                            if student_id not in events_by_student:
+                                events_by_student[student_id] = []
+                            events_by_student[student_id].append(row)
+                    
+                    if events_by_student:
+                        parser = LogParser(strict=False)
+                        all_events = parser.parse_file(csv_path)
+                        
+                        logger.info("CSV parsed to Pydantic models",
+                                   events=len(all_events),
+                                   parse_errors=len(parser.errors))
+                        
+                        if parser.errors:
+                            logger.warning("Parse errors detected",
+                                         error_count=len(parser.errors),
+                                         sample_errors=[str(e) for e in parser.errors[:3]])
+                        pydantic_by_student = {}
+                        event_index = 0
+                        
+                        for student_id, csv_rows in events_by_student.items():
+                            pydantic_by_student[student_id] = []
+                            for _ in csv_rows:
+                                if event_index < len(all_events):
+                                    pydantic_by_student[student_id].append(all_events[event_index])
+                                    event_index += 1
+                        
+                        loader = SQLiteLoader(current_app.config['DB_PATH'], batch_size=1000)
+                        total_loaded = 0
+
+                        for student_id, student_events in pydantic_by_student.items():
+                            if student_events:
+                                try:
+                                    # Gerar case_id único baseado em timestamp
+                                    import time
+                                    case_id = f"case_{int(time.time())}"
+                                    loaded = loader.load_events(
+                                        events=student_events,
+                                        student_id=student_id,
+                                        case_id=case_id,
+                                        session_id=None
+                                    )
+                                    total_loaded += loaded
+                                    logger.info("Loaded events for student",
+                                              student_hash=student_id[:8],
+                                              events=loaded)
+                                except Exception as e:
+                                    logger.error("Failed to load events for student",
+                                               student_hash=student_id[:8],
+                                               error=str(e))
+                                    continue
+                        
+                        logger.info("Events loaded into database", 
+                                   total=total_loaded,
+                                   students=len(pydantic_by_student))
+                        
+                        # Limpar arquivos temporários CSV após carregamento bem-sucedido
+                        try:
+                            if output_dir.exists():
+                                shutil.rmtree(output_dir)
+                                logger.info("Temporary CSV files deleted", path=str(output_dir))
+                        except Exception as e:
+                            logger.warning("Failed to delete temporary files", error=str(e))
+                        
+                        flash(f'Dados carregados no banco: {total_loaded} eventos de {len(pydantic_by_student)} estudante(s).', 'success')
+                    else:
+                        logger.warning("No events found in CSV")
+                        flash('Aviso: Nenhum evento encontrado no CSV.', 'warning')
+                        
+                except Exception as e:
+                    logger.error("Failed to load CSV into database", error=str(e), exc_info=True)
+                    flash(f'Aviso: Falha ao carregar dados no banco: {str(e)}', 'warning')
+                    # Tentar limpar arquivos temporários mesmo em caso de erro
+                    try:
+                        if output_dir.exists():
+                            shutil.rmtree(output_dir)
+                    except:
+                        pass
+                
                 mode_msg = 'incremental' if import_mode == 'incremental' else 'limpa'
                 flash(f'Importação {mode_msg} concluída! {total_events} eventos processados.', 'success')
                 
@@ -473,6 +575,12 @@ def register_routes(app: Flask):
             except Exception as e:
                 logger.error("Import failed", error=str(e), exc_info=True)
                 flash(f'Erro durante importação: {str(e)}', 'danger')
+                # Tentar limpar arquivos temporários mesmo em caso de erro
+                try:
+                    if output_dir.exists():
+                        shutil.rmtree(output_dir)
+                except:
+                    pass
                 return render_template('import.html', has_data=has_events_in_database())
         
         # Verificar se há dados no banco para modo GET
@@ -504,6 +612,22 @@ def register_routes(app: Flask):
             
             conn.commit()
             conn.close()
+            
+            # Limpar diretório data/
+            try:
+                import shutil
+                data_dir = Path("data")
+                if data_dir.exists():
+                    for item in data_dir.iterdir():
+                        if item.is_dir() and item.name != '.gitkeep':
+                            shutil.rmtree(item)
+                            logger.info("Temporary data directory removed", path=str(item))
+                        elif item.is_file() and item.name != '.gitkeep':
+                            item.unlink()
+                            logger.info("Temporary data file removed", path=str(item))
+                    logger.info("Data directory cleaned")
+            except Exception as e:
+                logger.warning("Failed to clean data directory", error=str(e))
             
             flash('Banco de dados limpo com sucesso! Todas as tabelas foram esvaziadas.', 'success')
             logger.info("Database cleared successfully")

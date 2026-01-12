@@ -36,9 +36,6 @@ fi
 
 echo -e "${BLUE}[2/2]${NC} Iniciando servidor Flask..."
 echo ""
-echo -e "${GREEN}Dashboard disponível em:${NC} http://localhost:5000"
-echo -e "Pressione ${YELLOW}Ctrl+C${NC} para parar o servidor"
-echo ""
 
 # Passar argumentos para serve.py (se fornecidos)
 python serve.py "$@"

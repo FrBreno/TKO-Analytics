@@ -124,23 +124,6 @@
                         </div>
                         
                         <div class="mb-4">
-                            <label for="output_name" class="form-label">
-                                <i class="fas fa-tag"></i> Nome da Cohort
-                            </label>
-                            <input 
-                                type="text" 
-                                class="form-control" 
-                                id="output_name" 
-                                name="output_name" 
-                                placeholder="cohort_poo_2024_2"
-                                required
-                            >
-                            <div class="form-text">
-                                Identificador único para esta cohort
-                            </div>
-                        </div>
-                        
-                        <div class="mb-4">
                             <label for="import_mode" class="form-label">
                                 <i class="fas fa-cog"></i> Modo de Importação
                             </label>
@@ -156,7 +139,7 @@
                             <div class="form-text">
                                 {% if has_data %}
                                 Modo incremental: adiciona eventos novos aos dados existentes<br>
-                                Modo limpa: apaga dados antigos desta cohort antes de importar
+                                Modo limpa: apaga todos os dados do banco antes de importar
                                 {% else %}
                                 <span class="text-warning">
                                     <i class="fas fa-info-circle"></i> 

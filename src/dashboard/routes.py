@@ -2,11 +2,13 @@
 Rotas do dashboard Flask.
 """
 
+import os
 import sqlite3
 import structlog
 import plotly.graph_objects as go
+from pathlib import Path
 from datetime import datetime
-from flask import Flask, render_template, jsonify, abort, current_app
+from flask import Flask, render_template, jsonify, abort, current_app, request, flash
 
 logger = structlog.get_logger()
 
@@ -365,3 +367,66 @@ def register_routes(app: Flask):
         conn.close()
         
         return jsonify(metrics)
+    
+    
+    @app.route('/import', methods=['GET', 'POST'])
+    def import_tko_data():
+        """Interface de importação de dados TKO."""
+        if request.method == 'POST':
+            root_dir = request.form.get('root_dir')
+            output_name = request.form.get('output_name')
+            
+            # Validar diretório
+            root_path = Path(root_dir)
+            if not root_path.exists():
+                flash('Diretório não encontrado!', 'danger')
+                return render_template('import.html')
+            
+            try:
+                # Importar módulos
+                from src.tko_integration.scanner import ClassroomScanner
+                from src.tko_integration.transformer import TKOTransformer
+                from src.tko_integration.validator import DataValidator
+                
+                # Executar scan
+                logger.info("Starting TKO data scan", root_dir=str(root_path))
+                scanner = ClassroomScanner()
+                scan = scanner.scan_directory(root_path)
+                
+                logger.info("Scan complete", 
+                           turmas=len(scan.turmas),
+                           students=scan.total_students,
+                           valid_repos=scan.valid_repos)
+                
+                # Transformar para CSV
+                output_dir = Path(f"tests/real_data/{output_name}")
+                output_dir.mkdir(parents=True, exist_ok=True)
+                csv_path = output_dir / "events.csv"
+                
+                salt = os.getenv('STUDENT_ID_SALT', 'default-salt-change-me')
+                transformer = TKOTransformer(salt)
+                
+                logger.info("Transforming to CSV", output=str(csv_path))
+                total_events = transformer.transform_scan_to_csv(scan, csv_path)
+                
+                logger.info("Transformation complete", events=total_events)
+                
+                # Adicionar dados ao resultado
+                scan.total_events = total_events
+                scan.csv_path = str(csv_path)
+                
+                # Gerar relatório de validação
+                validator = DataValidator()
+                report = validator.generate_report(scan)
+                logger.info("Validation report generated", warnings=len(scan.warnings))
+                
+                flash(f'Importação concluída! {total_events} eventos processados.', 'success')
+                
+                return render_template('import.html', scan_result=scan)
+                
+            except Exception as e:
+                logger.error("Import failed", error=str(e), exc_info=True)
+                flash(f'Erro durante importação: {str(e)}', 'danger')
+                return render_template('import.html')
+        
+        return render_template('import.html')

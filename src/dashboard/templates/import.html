@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+
+{% block title %}Import TKO Data{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="row mb-4">
+        <div class="col-12">
+            <h1 class="display-5">
+                <i class="fas fa-file-import"></i> Importar Dados do TKO
+            </h1>
+            <p class="lead text-muted">
+                Processe dados de turmas completas do GitHub Classroom
+            </p>
+        </div>
+    </div>
+
+    {% if scan_result %}
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="alert alert-success shadow-sm">
+                <h4><i class="fas fa-check-circle"></i> Scan Concluído!</h4>
+                <div class="row mt-3">
+                    <div class="col-md-3">
+                        <div class="text-center">
+                            <h2 class="mb-0">{{ scan_result.turmas|length }}</h2>
+                            <small class="text-muted">Turmas</small>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-center">
+                            <h2 class="mb-0">{{ scan_result.total_students }}</h2>
+                            <small class="text-muted">Alunos</small>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-center">
+                            <h2 class="mb-0">{{ scan_result.valid_repos }}</h2>
+                            <small class="text-muted">Repos Válidos</small>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="text-center">
+                            <h2 class="mb-0">{{ scan_result.total_events }}</h2>
+                            <small class="text-muted">Eventos</small>
+                        </div>
+                    </div>
+                </div>
+                
+                {% if scan_result.csv_path %}
+                <div class="mt-3">
+                    <p class="mb-0">
+                        <i class="fas fa-file-csv"></i> 
+                        CSV gerado: <code>{{ scan_result.csv_path }}</code>
+                    </p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    {% if scan_result.warnings %}
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="alert alert-warning shadow-sm">
+                <h5><i class="fas fa-exclamation-triangle"></i> Warnings ({{ scan_result.warnings|length }})</h5>
+                <div class="mt-3">
+                    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#warningsList">
+                        Ver Detalhes
+                    </button>
+                </div>
+                <div class="collapse mt-3" id="warningsList">
+                    <ul class="small mb-0">
+                        {% for warning in scan_result.warnings[:20] %}
+                        <li>{{ warning }}</li>
+                        {% endfor %}
+                        {% if scan_result.warnings|length > 20 %}
+                        <li><em>... e {{ scan_result.warnings|length - 20 }} mais warnings</em></li>
+                        {% endif %}
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="row">
+        <div class="col-12">
+            <a href="/cohort" class="btn btn-primary btn-lg">
+                <i class="fas fa-chart-bar"></i> Ver Dashboard
+            </a>
+            <a href="/import" class="btn btn-outline-secondary btn-lg">
+                <i class="fas fa-redo"></i> Nova Importação
+            </a>
+        </div>
+    </div>
+
+    {% else %}
+    <div class="row">
+        <div class="col-lg-8">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <form method="POST" action="/import" id="importForm">
+                        <div class="mb-4">
+                            <label for="root_dir" class="form-label">
+                                <i class="fas fa-folder"></i> Diretório Raiz
+                            </label>
+                            <input 
+                                type="text" 
+                                class="form-control form-control-lg" 
+                                id="root_dir" 
+                                name="root_dir" 
+                                placeholder="D:\turmas\2024_2\"
+                                required
+                            >
+                            <div class="form-text">
+                                Caminho absoluto para a pasta contendo as turmas do GitHub Classroom
+                            </div>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label for="output_name" class="form-label">
+                                <i class="fas fa-tag"></i> Nome da Cohort
+                            </label>
+                            <input 
+                                type="text" 
+                                class="form-control" 
+                                id="output_name" 
+                                name="output_name" 
+                                placeholder="cohort_poo_2024_2"
+                                required
+                            >
+                            <div class="form-text">
+                                Identificador único para esta cohort
+                            </div>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
+                            <i class="fas fa-play"></i> Iniciar Scan
+                        </button>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="card shadow-sm mt-4">
+                <div class="card-header bg-light">
+                    <i class="fas fa-book"></i> Estrutura Esperada
+                </div>
+                <div class="card-body">
+                    <pre class="mb-0">
+                        <code>
+                        turmas/
+                        ├── turma_dd_cd (1)/
+                        │   ├── poo-dd-cd-bloco-a-submissions/
+                        │   │   ├── poo-dd-cd-bloco-a-aluno1/
+                        │   │   │   └── poo/  (ou myrep/)
+                        │   │   │       └── .tko/
+                        │   │   │           ├── log/
+                        │   │   │           └── repository.yaml
+                        │   │   └── ...
+                        │   └── poo-dd-cd-bloco-b-submissions/
+                        │       └── ...
+                        └── turma_outra/
+                            └── ...
+                        </code>
+                    </pre>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-lg-4">
+            <div class="card shadow-sm mb-3">
+                <div class="card-header bg-primary text-white">
+                    <i class="fas fa-lightbulb"></i> Dicas
+                </div>
+                <div class="card-body">
+                    <ul class="mb-0">
+                        <li>Use caminho absoluto</li>
+                        <li>Pode conter múltiplas turmas</li>
+                        <li>Detecta blocos A, B, C... automaticamente</li>
+                        <li>Ignora repos sem .tko/</li>
+                        <li>Pseudonimiza student_id</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="card shadow-sm">
+                <div class="card-header bg-info text-white">
+                    <i class="fas fa-clock"></i> Tempo Estimado
+                </div>
+                <div class="card-body">
+                    <p><strong>~50 alunos:</strong> 10-30 segundos</p>
+                    <p class="mb-0"><strong>~100 alunos:</strong> 30-60 segundos</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+document.getElementById('importForm')?.addEventListener('submit', function() {
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processando...';
+});
+</script>
+{% endblock %}

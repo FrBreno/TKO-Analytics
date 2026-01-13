@@ -11,8 +11,8 @@ from pathlib import Path
 from datetime import datetime
 from flask import Flask, render_template, jsonify, abort, current_app, request, flash
 
-from src.parsers.log_parser import LogParser
-from src.etl.loader import SQLiteLoader
+from src.metrics.engine import MetricsEngine
+from src.etl.session_detector import SessionDetector
 
 logger = structlog.get_logger()
 
@@ -707,3 +707,225 @@ def register_routes(app: Flask):
         except Exception as e:
             logger.error("Browse directory failed", error=str(e), exc_info=True)
             return jsonify({'error': str(e)}), 500
+    
+    
+    @app.route('/api/process_etl', methods=['POST'])
+    def process_etl():
+        """
+        Processa ETL completo: detecta sessões e calcula métricas.
+        
+        Este endpoint:
+        1. Lê todos os eventos do banco de dados
+        2. Agrupa por estudante
+        3. Detecta sessões usando SessionDetector
+        4. Calcula métricas usando MetricsEngine
+        5. Popula tabelas sessions e metrics
+        
+        Returns:
+            JSON com estatísticas do processamento
+        """
+        try:
+            logger.info("ETL processing started")
+            
+            # Conectar ao banco
+            conn = get_db()
+            
+            # Verificar se há eventos para processar
+            count = conn.execute('SELECT COUNT(*) as count FROM events').fetchone()['count']
+            if count == 0:
+                conn.close()
+                return jsonify({
+                    'success': False,
+                    'error': 'Nenhum evento encontrado no banco de dados'
+                }), 400
+            
+            # Limpar tabelas sessions e metrics antes de reprocessar
+            conn.execute('DELETE FROM sessions')
+            conn.execute('DELETE FROM metrics')
+            conn.commit()
+            logger.info("Previous sessions and metrics cleared")
+            
+            # Buscar todos os eventos agrupados por estudante
+            events_query = """
+                SELECT 
+                    student_hash,
+                    case_id,
+                    task_id,
+                    event_type,
+                    timestamp,
+                    mode,
+                    rate,
+                    size,
+                    metadata
+                FROM events
+                ORDER BY student_hash, timestamp
+            """
+            
+            rows = conn.execute(events_query).fetchall()
+            
+            # Agrupar eventos por estudante
+            students_events = {}
+            for row in rows:
+                student_hash = row['student_hash']
+                if student_hash not in students_events:
+                    students_events[student_hash] = []
+                
+                # Reconstruir objeto BaseEvent
+                event_dict = {
+                    'timestamp': row['timestamp'],
+                    'case_id': row['case_id'],
+                    'student_id': student_hash,  # Já está hasheado
+                    'task': row['task_id'],
+                    'event_type': row['event_type']
+                }
+                
+                # Adicionar campos específicos por tipo
+                if row['mode']:
+                    event_dict['mode'] = row['mode']
+                if row['rate'] is not None:
+                    event_dict['rate'] = row['rate']
+                if row['size'] is not None:
+                    event_dict['size'] = row['size']
+                
+                timestamp = datetime.fromisoformat(row['timestamp'])
+                
+                # Criar evento apropriado
+                if row['event_type'] == 'exec':
+                    from src.models.events import ExecEvent
+                    event = ExecEvent(
+                        timestamp=timestamp,
+                        case_id=row['case_id'],
+                        student_id=student_hash,
+                        task=row['task_id'],
+                        mode=row['mode'],
+                        rate=row['rate']
+                    )
+                elif row['event_type'] == 'move':
+                    from src.models.events import MoveEvent
+                    event = MoveEvent(
+                        timestamp=timestamp,
+                        case_id=row['case_id'],
+                        student_id=student_hash,
+                        task=row['task_id'],
+                        size=row['size']
+                    )
+                elif row['event_type'] == 'self':
+                    from src.models.events import SelfEvent
+                    event = SelfEvent(
+                        timestamp=timestamp,
+                        case_id=row['case_id'],
+                        student_id=student_hash,
+                        task=row['task_id'],
+                        rate=row['rate']
+                    )
+                else:
+                    continue
+                
+                students_events[student_hash].append(event)
+            
+            # Processar cada estudante
+            session_detector = SessionDetector(timeout_minutes=30)
+            metrics_engine = MetricsEngine(session_timeout_minutes=30)
+            
+            total_students = len(students_events)
+            total_sessions = 0
+            total_metrics = 0
+            
+            for idx, (student_hash, events) in enumerate(students_events.items(), 1):
+                logger.info(
+                    "Processing student",
+                    student=student_hash[:8],
+                    progress=f"{idx}/{total_students}",
+                    events_count=len(events)
+                )
+                
+                # Detectar sessões e grupar por case_id primeiro
+                cases = {}
+                for event in events:
+                    if event.case_id not in cases:
+                        cases[event.case_id] = []
+                    cases[event.case_id].append(event)
+                
+                all_sessions = []
+                for case_id, case_events in cases.items():
+                    sessions = session_detector.detect_sessions(
+                        events=case_events,
+                        case_id=case_id,
+                        student_id=student_hash
+                    )
+                    all_sessions.extend(sessions)
+                
+                # Inserir sessões no banco
+                if all_sessions:
+                    for session in all_sessions:
+                        conn.execute(
+                            """
+                            INSERT INTO sessions (
+                                id, case_id, student_hash, task_id,
+                                start_timestamp, end_timestamp, duration_seconds,
+                                event_count, exec_count, move_count, self_count
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            session.to_db_row()
+                        )
+                    total_sessions += len(all_sessions)
+                
+                # Calcular métricas por tarefa
+                tasks = {}
+                for event in events:
+                    if event.task not in tasks:
+                        tasks[event.task] = []
+                    tasks[event.task].append(event)
+                
+                for task_id, task_events in tasks.items():
+                    # Filtrar sessões desta tarefa
+                    task_sessions = [s for s in all_sessions if s.task_id == task_id]
+                    case_id = task_events[0].case_id if task_events else "unknown"
+                    
+                    # Calcular métricas
+                    metrics = metrics_engine.compute_all_metrics(
+                        events=task_events,
+                        sessions=task_sessions,
+                        case_id=case_id,
+                        student_id=student_hash,
+                        task_id=task_id
+                    )
+                    
+                    # Inserir métricas no banco
+                    if metrics:
+                        for metric in metrics:
+                            conn.execute(
+                                """
+                                INSERT INTO metrics (
+                                    id, case_id, student_hash, task_id,
+                                    metric_name, metric_value, metadata, computed_at
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                metric.to_db_row()
+                            )
+                        total_metrics += len(metrics)
+            
+            # Commit final
+            conn.commit()
+            conn.close()
+            
+            logger.info(
+                "ETL processing completed",
+                students=total_students,
+                sessions=total_sessions,
+                metrics=total_metrics
+            )
+            
+            return jsonify({
+                'success': True,
+                'students_processed': total_students,
+                'sessions_created': total_sessions,
+                'metrics_calculated': total_metrics
+            })
+            
+        except Exception as e:
+            logger.error("ETL processing failed", error=str(e), exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500

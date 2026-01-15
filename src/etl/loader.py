@@ -42,20 +42,36 @@ class SQLiteLoader:
         Raises:
             LoadError: Se banco não existe ou está inacessível
         """
-        self.db_path = Path(db_path)
+        # Garantir caminho absoluto
+        self.db_path = Path(db_path).resolve()
         self.batch_size = batch_size
         self.events_loaded = 0
         self.events_skipped = 0
         
+        # Criar banco se não existir
         if not self.db_path.exists():
-            raise LoadError(f"Database not found: {self.db_path}")
+            logger.warning("[SQLiteLoader.__init__] - Database not found, initializing",
+                          db_path=str(self.db_path))
+            from src.etl.init_db import init_database
+            try:
+                init_database(str(self.db_path))
+                logger.info("[SQLiteLoader.__init__] - Database initialized",
+                           db_path=str(self.db_path))
+            except Exception as e:
+                raise LoadError(f"Failed to initialize database {self.db_path}: {e}") from e
+        
+        logger.info("[SQLiteLoader.__init__] - Loader initialized",
+                   db_path=str(self.db_path),
+                   batch_size=batch_size)
     
     def load_events(
         self,
         events: List[BaseEvent],
         student_id: str,
         case_id: Optional[str] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        dataset_role: str = "analysis",
+        student_name: Optional[str] = None
     ) -> int:
         """
         Carrega lista de eventos no banco de dados.
@@ -65,6 +81,8 @@ class SQLiteLoader:
             student_id: ID do estudante (será hasheado para anonimização)
             case_id: ID do caso (opcional, gerado se None)
             session_id: ID da sessão (opcional)
+            dataset_role: 'model' ou 'analysis' (padrão: 'analysis')
+            student_name: Nome do estudante (opcional)
             
         Returns:
             Número de eventos carregados com sucesso
@@ -76,6 +94,10 @@ class SQLiteLoader:
             logger.warning("[SQLiteLoader.load_events] - load_events_empty", message="No events to load")
             return 0
         
+        # Valida dataset_role
+        if dataset_role not in ("model", "analysis"):
+            raise LoadError(f"Invalid dataset_role: {dataset_role}. Must be 'model' or 'analysis'")
+        
         # Gera case_id se não fornecido
         if case_id is None:
             case_id = f"case_{uuid.uuid4().hex[:12]}"
@@ -83,13 +105,22 @@ class SQLiteLoader:
         # Hash do student_id para anonimização
         student_hash = self._hash_student_id(student_id)
         
+        # Extrai student_name do primeiro evento se não fornecido
+        if student_name is None and events and hasattr(events[0], 'student_name'):
+            student_name = events[0].student_name
+        
         logger.info("[SQLiteLoader.load_events] - load_events_started",
                    events=len(events),
                    case_id=case_id,
-                   student_hash=student_hash[:8])
+                   student_hash=student_hash[:8],
+                   student_name=student_name,
+                   dataset_role=dataset_role,
+                   db_path=str(self.db_path))
         
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(str(self.db_path))
         conn.execute("PRAGMA foreign_keys = ON")
+        
+        logger.debug("[SQLiteLoader.load_events] - Database connection established")
         
         try:
             cursor = conn.cursor()
@@ -97,14 +128,25 @@ class SQLiteLoader:
             # Carrega em batches
             for i in range(0, len(events), self.batch_size):
                 batch = events[i:i + self.batch_size]
-                self._load_batch(cursor, batch, case_id, student_hash, session_id)
+                self._load_batch(cursor, batch, case_id, student_hash, student_name, session_id, dataset_role)
             
             conn.commit()
             self.events_loaded = len(events)
             
             logger.info("[SQLiteLoader.load_events] - load_events_completed",
                        loaded=self.events_loaded,
-                       skipped=self.events_skipped)
+                       skipped=self.events_skipped,
+                       dataset_role=dataset_role,
+                       db_path=str(self.db_path))
+            
+            # Verificar se realmente foi persistido na tabela correta
+            table_name = f"{dataset_role}_events"
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE case_id = ?", (case_id,))
+            persisted_count = cursor.fetchone()[0]
+            logger.info("[SQLiteLoader.load_events] - Verification check",
+                       persisted=persisted_count,
+                       expected=self.events_loaded,
+                       table=table_name)
             
             return self.events_loaded
             
@@ -120,19 +162,24 @@ class SQLiteLoader:
         batch: List[BaseEvent],
         case_id: str,
         student_hash: str,
-        session_id: Optional[str]
+        student_name: Optional[str],
+        session_id: Optional[str],
+        dataset_role: str
     ) -> None:
-        """Carrega um batch de eventos."""
-        for event in batch:
-            row = self._event_to_row(event, case_id, student_hash, session_id)
+        """Carrega um batch de eventos na tabela correta (model_events ou analysis_events)."""
+        # Define tabela baseada no dataset_role
+        table_name = f"{dataset_role}_events"
+        
+        for batch_index, event in enumerate(batch):
+            row = self._event_to_row(event, case_id, student_hash, student_name, session_id, batch_index)
             
             try:
-                cursor.execute("""
-                    INSERT INTO events (
-                        id, case_id, student_hash, task_id, activity,
+                cursor.execute(f"""
+                    INSERT INTO {table_name} (
+                        id, case_id, student_hash, student_name, task_id, activity,
                         event_type, timestamp, duration_seconds,
                         session_id, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, row)
             except sqlite3.IntegrityError as e:
                 # Duplicata (id já existe) - skippa silenciosamente
@@ -146,17 +193,19 @@ class SQLiteLoader:
         event: BaseEvent,
         case_id: str,
         student_hash: str,
-        session_id: Optional[str]
+        student_name: Optional[str],
+        session_id: Optional[str],
+        batch_index: int = 0
     ) -> tuple:
         """
         Converte evento Pydantic em tupla para INSERT.
         
         Returns:
-            Tupla: (id, case_id, student_hash, task_id, activity,
+            Tupla: (id, case_id, student_hash, student_name, task_id, activity,
                    event_type, timestamp, duration_seconds, 
                    session_id, metadata_json)
         """
-        event_id = self._generate_event_id(event, case_id)
+        event_id = self._generate_event_id(event, case_id, batch_index)
         activity = self._map_activity(event)
         event_type = type(event).__name__
         timestamp = event.timestamp.isoformat()
@@ -168,6 +217,7 @@ class SQLiteLoader:
             event_id,
             case_id,
             student_hash,
+            student_name,
             event.task_id,
             activity,
             event_type,
@@ -177,13 +227,55 @@ class SQLiteLoader:
             metadata_json
         )
     
-    def _generate_event_id(self, event: BaseEvent, case_id: str) -> str:
+    def _generate_event_id(self, event: BaseEvent, case_id: str, batch_index: int = 0) -> str:
         """
         Gera ID único e determinístico para o evento.
         
-        Usa hash SHA256 de (case_id + timestamp + task_id + tipo).
+        Usa hash SHA256 de campos base + campos específicos por tipo + batch_index.
+        
+        Args:
+            event: Evento a ser identificado
+            case_id: ID do caso
+            batch_index: Posição do evento no batch (garante unicidade para duplicatas verdadeiras)
+            
+        Returns:
+            ID único no formato 'evt_<16_chars_hex>'
         """
-        key = f"{case_id}|{event.timestamp.isoformat()}|{event.task_id}|{type(event).__name__}"
+        # Campos base comuns a todos os eventos
+        key_parts = [
+            case_id,
+            event.timestamp.isoformat(),
+            event.task_id,
+            type(event).__name__,
+            str(batch_index)
+        ]
+        
+        # Adiciona campos específicos por tipo de evento
+        if isinstance(event, ExecEvent):
+            # ExecEvent: mode, rate, size, error
+            key_parts.extend([
+                event.mode,
+                str(event.rate if event.rate is not None else 'None'),
+                str(event.size),
+                event.error or 'NONE'
+            ])
+        elif isinstance(event, MoveEvent):
+            # MoveEvent: action
+            key_parts.append(event.action)
+        elif isinstance(event, SelfEvent):
+            # SelfEvent: rate, autonomy, todas as fontes de ajuda
+            key_parts.extend([
+                str(event.rate),
+                str(event.autonomy if event.autonomy is not None else 'None'),
+                event.help_human or '',
+                event.help_iagen or '',
+                event.help_guide or '',
+                event.help_other or '',
+                str(event.study_minutes if event.study_minutes is not None else 'None')
+            ])
+        
+        # Gera hash SHA256 dos campos concatenados
+        key = "|".join(str(p) for p in key_parts)
         hash_digest = hashlib.sha256(key.encode()).hexdigest()
         return f"evt_{hash_digest[:16]}"
     
@@ -198,17 +290,24 @@ class SQLiteLoader:
     def _map_activity(self, event: BaseEvent) -> str:
         """
         Mapeia tipo de evento para activity name (pm4py convention).
+        Inclui modo/ação quando disponível para granularidade maior.
         
-        - ExecEvent → "test_execution"
-        - MoveEvent → "task_navigation" 
-        - SelfEvent → "self_assessment"
+        - ExecEvent → "EXEC [mode]" (ex: "EXEC FULL", "EXEC FREE")
+        - MoveEvent → "MOVE [action]" (ex: "MOVE PICK", "MOVE BACK")
+        - SelfEvent → "SELF"
         """
         if isinstance(event, ExecEvent):
-            return "test_execution"
+            base_name = "EXEC"
+            if hasattr(event, 'mode') and event.mode:
+                return f"{base_name} {event.mode}"
+            return base_name
         elif isinstance(event, MoveEvent):
-            return "task_navigation"
+            base_name = "MOVE"
+            if hasattr(event, 'action') and event.action:
+                return f"{base_name} {event.action}"
+            return base_name
         elif isinstance(event, SelfEvent):
-            return "self_assessment"
+            return "SELF"
         else:
             return "unknown_activity"
     

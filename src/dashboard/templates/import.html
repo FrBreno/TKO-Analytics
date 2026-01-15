@@ -6,218 +6,208 @@
 <div class="container-fluid py-4">
     <div class="row mb-4">
         <div class="col-12">
-            <h1 class="display-5">
-                <i class="fas fa-file-import"></i> Importar Dados do TKO
-            </h1>
-            <p class="lead text-muted">
-                Processe dados de turmas completas do GitHub Classroom
-            </p>
-        </div>
-    </div>
-
-    {% if scan_result %}
-    <div class="row mb-4">
-        <div class="col-12">
-            <div class="alert alert-success shadow-sm">
-                <h4><i class="fas fa-check-circle"></i> Scan Concluído!</h4>
-                <div class="row mt-3">
-                    <div class="col-md-3">
-                        <div class="text-center">
-                            <h2 class="mb-0">{{ scan_result.turmas|length }}</h2>
-                            <small class="text-muted">Turmas</small>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="text-center">
-                            <h2 class="mb-0">{{ scan_result.total_students }}</h2>
-                            <small class="text-muted">Alunos</small>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="text-center">
-                            <h2 class="mb-0">{{ scan_result.valid_repos }}</h2>
-                            <small class="text-muted">Repos Válidos</small>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="text-center">
-                            <h2 class="mb-0">{{ scan_result.total_events }}</h2>
-                            <small class="text-muted">Eventos</small>
-                        </div>
-                    </div>
-                </div>
-                
-                {% if scan_result.csv_path %}
-                <div class="mt-3">
-                    <p class="mb-0">
-                        <i class="fas fa-file-csv"></i> 
-                        CSV gerado: <code>{{ scan_result.csv_path }}</code>
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <h1 class="display-5">
+                        <i class="fas fa-file-import"></i> Importar Dados do TKO
+                    </h1>
+                    <p class="lead text-muted">
+                        Processe dados de turmas completas do GitHub Classroom
                     </p>
+                </div>
+                {% if has_model_data or has_analysis_data %}
+                <div>
+                    <a href="/" class="btn btn-lg btn-primary">
+                        <i class="fas fa-home"></i> Ir para Dashboard
+                    </a>
                 </div>
                 {% endif %}
             </div>
         </div>
     </div>
 
-    {% if scan_result.warnings %}
-    <div class="row mb-4">
-        <div class="col-12">
-            <div class="alert alert-warning shadow-sm">
-                <h5><i class="fas fa-exclamation-triangle"></i> Warnings ({{ scan_result.warnings|length }})</h5>
-                <div class="mt-3">
-                    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#warningsList">
-                        Ver Detalhes
-                    </button>
-                </div>
-                <div class="collapse mt-3" id="warningsList">
-                    <ul class="small mb-0">
-                        {% for warning in scan_result.warnings[:20] %}
-                        <li>{{ warning }}</li>
-                        {% endfor %}
-                        {% if scan_result.warnings|length > 20 %}
-                        <li><em>... e {{ scan_result.warnings|length - 20 }} mais warnings</em></li>
-                        {% endif %}
-                    </ul>
-                </div>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
+    <!-- Seção de formulários de importação -->
     <div class="row">
-        <div class="col-12">
-            <a href="/cohort" class="btn btn-primary btn-lg">
-                <i class="fas fa-chart-bar"></i> Ver Dashboard
-            </a>
-            <a href="/import" class="btn btn-outline-secondary btn-lg">
-                <i class="fas fa-redo"></i> Nova Importação
-            </a>
-            <button id="processMetricsBtn" class="btn btn-success btn-lg" onclick="processETL()">
-                <i class="fas fa-cogs"></i> Processar Métricas
-            </button>
-        </div>
-    </div>
-    
-    <div id="etlProgress" class="row mt-4" style="display: none;">
-        <div class="col-12">
-            <div class="card shadow-sm">
-                <div class="card-body">
-                    <h5 class="card-title">
-                        <i class="fas fa-spinner fa-spin"></i> Processando ETL...
+        <div class="col-lg-6">
+            <div class="card shadow-sm border-primary">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">
+                        <i class="fas fa-project-diagram"></i> Importar Dados MODEL
                     </h5>
-                    <p class="card-text text-muted">
-                        Detectando sessões e calculando métricas pedagógicas. Isso pode levar alguns minutos.
-                    </p>
-                    <div class="progress">
-                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
-                             role="progressbar" 
-                             style="width: 100%">
-                        </div>
-                    </div>
                 </div>
-            </div>
-        </div>
-    </div>
-    
-    <div id="etlResult" class="row mt-4" style="display: none;">
-        <div class="col-12">
-            <div class="alert alert-success shadow-sm">
-                <h4><i class="fas fa-check-circle"></i> Métricas Processadas!</h4>
-                <div class="row mt-3">
-                    <div class="col-md-4">
-                        <div class="text-center">
-                            <h2 class="mb-0" id="etlStudents">0</h2>
-                            <small class="text-muted">Estudantes</small>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="text-center">
-                            <h2 class="mb-0" id="etlSessions">0</h2>
-                            <small class="text-muted">Sessões</small>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="text-center">
-                            <h2 class="mb-0" id="etlMetrics">0</h2>
-                            <small class="text-muted">Métricas</small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <div id="etlError" class="row mt-4" style="display: none;">
-        <div class="col-12">
-            <div class="alert alert-danger shadow-sm">
-                <h5><i class="fas fa-exclamation-circle"></i> Erro no Processamento</h5>
-                <p class="mb-0" id="etlErrorMessage"></p>
-            </div>
-        </div>
-    </div>
-
-    {% else %}
-    <div class="row">
-        <div class="col-lg-8">
-            <div class="card shadow-sm">
                 <div class="card-body">
-                    <form method="POST" action="/import" id="importForm">
-                        <div class="mb-4">
-                            <label for="root_dir" class="form-label">
-                                <i class="fas fa-folder"></i> Diretório Raiz
+                    <div class="alert alert-info">
+                        <small>
+                            <i class="fas fa-info-circle"></i>
+                            <strong>Dados MODEL:</strong> Usados para descobrir o processo global com Inductive Miner.
+                            Geralmente uma turma de referência com comportamento esperado.
+                        </small>
+                    </div>
+                    
+                    <form method="POST" action="/import" id="importFormModel">
+                        <input type="hidden" name="dataset_role" value="model">
+                        
+                        <div class="mb-3">
+                            <label for="root_dir_model" class="form-label">
+                                <i class="fas fa-folder"></i> Diretório
                             </label>
-                            <div class="input-group input-group-lg">
+                            <div class="input-group">
                                 <input 
                                     type="text" 
                                     class="form-control" 
-                                    id="root_dir" 
+                                    id="root_dir_model" 
                                     name="root_dir" 
-                                    placeholder="D:\turmas\2024_2\"
+                                    placeholder="D:\turmas\turma_referencia\"
                                     required
                                 >
-                                <button class="btn btn-outline-secondary" type="button" id="browseBtn" data-bs-toggle="modal" data-bs-target="#directoryBrowserModal">
-                                    <i class="fas fa-folder-open"></i> Browse
+                                <button class="btn btn-outline-secondary" type="button" id="browseBtnModel" data-bs-toggle="modal" data-bs-target="#directoryBrowserModal">
+                                    <i class="fas fa-folder-open"></i> Procurar
                                 </button>
                             </div>
                             <div class="form-text">
-                                Caminho absoluto para a pasta contendo as turmas do GitHub Classroom
+                                Pasta com dados da turma de referência
                             </div>
                         </div>
                         
-                        <div class="mb-4">
-                            <label for="import_mode" class="form-label">
-                                <i class="fas fa-cog"></i> Modo de Importação
+                        <div class="mb-3">
+                            <label for="import_mode_model" class="form-label">
+                                <i class="fas fa-cog"></i> Modo
                             </label>
-                            <select class="form-select" id="import_mode" name="import_mode">
-                                {% if has_data %}
-                                <option value="incremental" selected>Incremental (adicionar ao existente)</option>
-                                <option value="clean">Limpa (substituir dados)</option>
+                            <select class="form-select" id="import_mode_model" name="import_mode">
+                                {% if has_model_data %}
+                                <option value="incremental" selected>Incremental</option>
+                                <option value="clean">Limpa</option>
                                 {% else %}
-                                <option value="incremental" disabled>Incremental (adicionar ao existente) - Indisponível: banco vazio</option>
-                                <option value="clean" selected>Limpa (substituir dados)</option>
+                                <option value="clean" selected>Limpa</option>
+                                <option value="incremental" disabled>Incremental (sem dados MODEL)</option>
                                 {% endif %}
                             </select>
                             <div class="form-text">
-                                {% if has_data %}
-                                Modo incremental: adiciona eventos novos aos dados existentes<br>
-                                Modo limpa: apaga todos os dados do banco antes de importar
+                                {% if has_model_data %}
+                                <span class="badge bg-info">Dados MODEL existentes</span> - Modo incremental disponível
                                 {% else %}
-                                <span class="text-warning">
-                                    <i class="fas fa-info-circle"></i> 
-                                    Modo incremental indisponível - nenhum dado no banco. Use modo limpa para primeira importação.
-                                </span>
+                                <span class="badge bg-warning">Sem dados MODEL</span> - Primeira importação (modo limpa)
                                 {% endif %}
                             </div>
                         </div>
                         
-                        <button type="submit" class="btn btn-primary btn-lg" id="submitBtn">
-                            <i class="fas fa-play"></i> Iniciar Scan
+                        <button type="submit" class="btn btn-primary w-100" id="submitBtnModel">
+                            <i class="fas fa-upload"></i> Importar MODEL
                         </button>
+                        <div class="mt-3" id="loadingModel" style="display: none;">
+                            <div class="alert alert-info">
+                                <i class="fas fa-spinner fa-spin"></i> Processando importação... Por favor, aguarde.
+                            </div>
+                        </div>
                     </form>
                 </div>
             </div>
-            
-            <div class="card shadow-sm mt-4">
+        </div>
+        
+        <!-- Formulário ANALYSIS -->
+        <div class="col-lg-6">
+            <div class="card shadow-sm border-success">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0">
+                        <i class="fas fa-chart-line"></i> Importar Dados ANALYSIS
+                    </h5>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-success">
+                        <small>
+                            <i class="fas fa-magic"></i>
+                            <strong>Dados ANALYSIS:</strong> Analisados contra o modelo para detectar desvios.
+                            <span class="badge bg-warning text-dark">Auto-processa métricas</span>
+                        </small>
+                    </div>
+                    
+                    <form method="POST" action="/import" id="importFormAnalysis">
+                        <input type="hidden" name="dataset_role" value="analysis">
+                        
+                        <div class="mb-3">
+                            <label for="root_dir_analysis" class="form-label">
+                                <i class="fas fa-folder"></i> Diretório
+                            </label>
+                            <div class="input-group">
+                                <input 
+                                    type="text" 
+                                    class="form-control" 
+                                    id="root_dir_analysis" 
+                                    name="root_dir" 
+                                    placeholder="D:\turmas\turma_analise\"
+                                    required
+                                >
+                                <button class="btn btn-outline-secondary" type="button" id="browseBtnAnalysis" data-bs-toggle="modal" data-bs-target="#directoryBrowserModal">
+                                    <i class="fas fa-folder-open"></i> Procurar
+                                </button>
+                            </div>
+                            <div class="form-text">
+                                Pasta com dados da turma a analisar
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="import_mode_analysis" class="form-label">
+                                <i class="fas fa-cog"></i> Modo
+                            </label>
+                            <select class="form-select" id="import_mode_analysis" name="import_mode">
+                                {% if has_analysis_data %}
+                                <option value="incremental" selected>Incremental</option>
+                                <option value="clean">Limpa</option>
+                                {% else %}
+                                <option value="clean" selected>Limpa</option>
+                                <option value="incremental" disabled>Incremental (sem dados ANALYSIS)</option>
+                                {% endif %}
+                            </select>
+                            <div class="form-text">
+                                {% if has_analysis_data %}
+                                <span class="badge bg-info">Dados ANALYSIS existentes</span> - Modo incremental disponível
+                                {% else %}
+                                <span class="badge bg-warning">Sem dados ANALYSIS</span> - Primeira importação (modo limpa)
+                                {% endif %}
+                            </div>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-success w-100" id="submitBtnAnalysis">
+                            <i class="fas fa-upload"></i> Importar ANALYSIS
+                        </button>
+                        <div class="mt-3" id="loadingAnalysis" style="display: none;">
+                            <div class="alert alert-info">
+                                <i class="fas fa-spinner fa-spin"></i> Processando importação e calculando métricas... Por favor, aguarde.
+                            </div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card shadow-sm">
+                <div class="card-header bg-light">
+                    <i class="fas fa-lightbulb"></i> Dica: Separação Metodológica
+                </div>
+                <div class="card-body">
+                    <p class="mb-2">
+                        <strong>Abordagem recomendada:</strong> Use turmas diferentes para MODEL e ANALYSIS.
+                    </p>
+                    <ul class="mb-0">
+                        <li><strong>MODEL:</strong> Turma com desempenho bom/referência → gera processo esperado</li>
+                        <li><strong>ANALYSIS:</strong> Turma atual/nova → compara com o esperado e detecta desvios</li>
+                    </ul>
+                    <p class="text-muted small mt-2 mb-0">
+                        <i class="fas fa-info-circle"></i> 
+                        Também é possível usar a mesma turma para ambos, mas isso pode levar a overfitting.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row mt-4">
+        <div class="col-lg-7">
+            <div class="card shadow-sm">
                 <div class="card-header bg-light">
                     <i class="fas fa-book"></i> Estrutura Esperada
                 </div>
@@ -243,8 +233,8 @@
             </div>
         </div>
         
-        <div class="col-lg-4">
-            <div class="card shadow-sm mb-3">
+        <div class="col-lg-5">
+            <div class="card shadow-sm">
                 <div class="card-header bg-primary text-white">
                     <i class="fas fa-lightbulb"></i> Dicas
                 </div>
@@ -258,19 +248,8 @@
                     </ul>
                 </div>
             </div>
-            
-            <div class="card shadow-sm">
-                <div class="card-header bg-info text-white">
-                    <i class="fas fa-clock"></i> Tempo Estimado
-                </div>
-                <div class="card-body">
-                    <p><strong>~50 alunos:</strong> 10-30 segundos</p>
-                    <p class="mb-0"><strong>~100 alunos:</strong> 30-60 segundos</p>
-                </div>
-            </div>
         </div>
     </div>
-    {% endif %}
 </div>
 
 <div class="modal fade directory-browser-modal" id="directoryBrowserModal" tabindex="-1" aria-labelledby="directoryBrowserLabel" aria-hidden="true">
@@ -326,57 +305,28 @@
 </div>
 
 <script>
-async function processETL() {
-    const btn = document.getElementById('processMetricsBtn');
-    const progressDiv = document.getElementById('etlProgress');
-    const resultDiv = document.getElementById('etlResult');
-    const errorDiv = document.getElementById('etlError');
+// Loading para formulário MODEL
+document.getElementById('importFormModel')?.addEventListener('submit', function() {
+    const btn = document.getElementById('submitBtnModel');
+    const loading = document.getElementById('loadingModel');
     
-    // Esconder resultados anteriores
-    resultDiv.style.display = 'none';
-    errorDiv.style.display = 'none';
-    
-    // Mostrar progresso
-    progressDiv.style.display = 'block';
-    btn.disabled = true;
-    
-    try {
-        const response = await fetch('/api/process_etl', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        });
-        const data = await response.json();
-        progressDiv.style.display = 'none';
-        
-        if (data.success) {
-            // Mostrar resultado
-            document.getElementById('etlStudents').textContent = data.students_processed;
-            document.getElementById('etlSessions').textContent = data.sessions_created;
-            document.getElementById('etlMetrics').textContent = data.metrics_calculated;
-            resultDiv.style.display = 'block';
-        } else {
-            document.getElementById('etlErrorMessage').textContent = data.error;
-            errorDiv.style.display = 'block';
-            btn.disabled = false;
-        }
-        
-    } catch (error) {
-        progressDiv.style.display = 'none';
-        document.getElementById('etlErrorMessage').textContent = error.message;
-        errorDiv.style.display = 'block';
-        btn.disabled = false;
-    }
-}
-
-document.getElementById('importForm')?.addEventListener('submit', function() {
-    const btn = document.getElementById('submitBtn');
     btn.disabled = true;
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processando...';
+    loading.style.display = 'block';
+});
+
+// Loading para formulário ANALYSIS
+document.getElementById('importFormAnalysis')?.addEventListener('submit', function() {
+    const btn = document.getElementById('submitBtnAnalysis');
+    const loading = document.getElementById('loadingAnalysis');
+    
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processando...';
+    loading.style.display = 'block';
 });
 
 let currentPath = '';
+
 
 function showLoading() {
     document.getElementById('loadingSpinner').style.display = 'block';
@@ -513,9 +463,17 @@ function updateBreadcrumb(path) {
     });
 }
 
+let currentInputId = 'root_dir_model';
+document.getElementById('browseBtnModel')?.addEventListener('click', function() {
+    currentInputId = 'root_dir_model';
+});
+document.getElementById('browseBtnAnalysis')?.addEventListener('click', function() {
+    currentInputId = 'root_dir_analysis';
+});
+
 // Inicializar modal
 document.getElementById('directoryBrowserModal')?.addEventListener('shown.bs.modal', function() {
-    const currentValue = document.getElementById('root_dir').value;
+    const currentValue = document.getElementById(currentInputId).value;
     if (currentValue) {
         loadDirectory(currentValue);
     } else {
@@ -532,7 +490,7 @@ document.getElementById('refreshBtn')?.addEventListener('click', function() {
 document.getElementById('selectBtn')?.addEventListener('click', function() {
     const selectedPath = document.getElementById('selectedPath').value;
     if (selectedPath) {
-        document.getElementById('root_dir').value = selectedPath;
+        document.getElementById(currentInputId).value = selectedPath;
         bootstrap.Modal.getInstance(document.getElementById('directoryBrowserModal')).hide();
     }
 });

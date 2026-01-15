@@ -34,11 +34,12 @@ def init_database(db_path: str = "./data/src.db") -> None:
     
     # Schema SQLite
     cursor.executescript("""
-        -- Events
-        CREATE TABLE IF NOT EXISTS events (
+        -- Model Events (dados para geração do modelo de processo)
+        CREATE TABLE IF NOT EXISTS model_events (
             id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
             student_hash TEXT NOT NULL,
+            student_name TEXT,
             task_id TEXT NOT NULL,
             activity TEXT NOT NULL,
             event_type TEXT NOT NULL,
@@ -48,18 +49,41 @@ def init_database(db_path: str = "./data/src.db") -> None:
             metadata TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_events_case_timestamp ON events(case_id, timestamp);
-        CREATE INDEX IF NOT EXISTS idx_events_student ON events(student_hash);
-        CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
-        CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
-        CREATE INDEX IF NOT EXISTS idx_events_activity ON events(activity);
+        CREATE INDEX IF NOT EXISTS idx_model_events_case_timestamp ON model_events(case_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_model_events_student ON model_events(student_hash);
+        CREATE INDEX IF NOT EXISTS idx_model_events_task ON model_events(task_id);
+        CREATE INDEX IF NOT EXISTS idx_model_events_timestamp ON model_events(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_model_events_session ON model_events(session_id);
+        CREATE INDEX IF NOT EXISTS idx_model_events_activity ON model_events(activity);
+        
+        -- Analysis Events (dados para análise comportamental)
+        CREATE TABLE IF NOT EXISTS analysis_events (
+            id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL,
+            student_hash TEXT NOT NULL,
+            student_name TEXT,
+            task_id TEXT NOT NULL,
+            activity TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            duration_seconds INTEGER,
+            session_id TEXT,
+            metadata TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_analysis_events_case_timestamp ON analysis_events(case_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_analysis_events_student ON analysis_events(student_hash);
+        CREATE INDEX IF NOT EXISTS idx_analysis_events_task ON analysis_events(task_id);
+        CREATE INDEX IF NOT EXISTS idx_analysis_events_timestamp ON analysis_events(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_analysis_events_session ON analysis_events(session_id);
+        CREATE INDEX IF NOT EXISTS idx_analysis_events_activity ON analysis_events(activity);
         
         -- Sessions
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
             student_hash TEXT NOT NULL,
+            student_name TEXT,
             task_id TEXT NOT NULL,
             start_timestamp TEXT NOT NULL,
             end_timestamp TEXT NOT NULL,
@@ -79,6 +103,7 @@ def init_database(db_path: str = "./data/src.db") -> None:
             id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
             student_hash TEXT NOT NULL,
+            student_name TEXT,
             task_id TEXT NOT NULL,
             file_path TEXT NOT NULL,
             timestamp TEXT NOT NULL,
@@ -95,6 +120,7 @@ def init_database(db_path: str = "./data/src.db") -> None:
             id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
             student_hash TEXT NOT NULL,
+            student_name TEXT,
             task_id TEXT NOT NULL,
             file_path TEXT NOT NULL,
             timestamp TEXT NOT NULL,
@@ -112,12 +138,13 @@ def init_database(db_path: str = "./data/src.db") -> None:
             id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
             student_hash TEXT NOT NULL,
+            student_name TEXT,
             task_id TEXT NOT NULL,
             metric_name TEXT NOT NULL,
             metric_value REAL NOT NULL,
             metadata TEXT,
             computed_at TEXT DEFAULT (datetime('now')),
-            UNIQUE(case_id, metric_name)
+            UNIQUE(case_id, task_id, metric_name)
         );
         CREATE INDEX IF NOT EXISTS idx_metrics_student_metric ON metrics(student_hash, metric_name);
         CREATE INDEX IF NOT EXISTS idx_metrics_task_metric ON metrics(task_id, metric_name);
@@ -127,6 +154,7 @@ def init_database(db_path: str = "./data/src.db") -> None:
             id TEXT PRIMARY KEY,
             case_id TEXT NOT NULL,
             student_hash TEXT NOT NULL,
+            student_name TEXT,
             task_id TEXT NOT NULL,
             pattern_type TEXT NOT NULL,
             confidence REAL NOT NULL,
@@ -158,7 +186,8 @@ def init_database(db_path: str = "./data/src.db") -> None:
         "[init_database] -  Database inicializado com sucesso.",
         db_path=str(db_path),
         tables=[
-            "events",
+            "model_events",
+            "analysis_events",
             "sessions", 
             "code_snapshots",
             "code_patches",

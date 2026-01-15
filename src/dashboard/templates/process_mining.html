@@ -1,0 +1,414 @@
+{% extends "base.html" %}
+
+{% block title %}Process Mining - TKO Analytics{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="row mb-4">
+        <div class="col-12">
+            <h1 class="display-5">
+                <i class="fas fa-project-diagram"></i> Process Mining
+            </h1>
+            <p class="lead text-muted">
+                Descoberta automática de processos e análise de conformidade comportamental
+            </p>
+        </div>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-lg-6">
+            <div class="card shadow-sm">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0"><i class="fas fa-cogs"></i> Gerar Modelo de Processo</h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted">
+                        Aplica <strong>Inductive Miner</strong> aos eventos MODEL para descobrir o processo.
+                    </p>
+                    
+                    <div class="mb-3">
+                        <label for="modelScopeSelect" class="form-label">
+                            <strong>Tarefa para Modelagem: <span class="text-danger">*</span></strong>
+                            <i class="fas fa-info-circle text-info" 
+                               data-bs-toggle="tooltip" 
+                               title="Selecione a tarefa para gerar o modelo de processo. O modelo será específico desta tarefa.">
+                            </i>
+                        </label>
+                        <select class="form-select" id="modelScopeSelect">
+                            <option value="">Selecione uma tarefa</option>
+                            <optgroup label="Tarefas Disponíveis" id="modelScopeOptgroup">
+                            </optgroup>
+                        </select>
+                        <small class="form-text text-muted" id="modelScopeInfo">
+                            <i class="fas fa-spinner fa-spin"></i> Carregando tarefas disponíveis...
+                        </small>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="noiseThreshold" class="form-label">
+                            Noise Threshold: <span id="noiseValue">0.2</span>
+                        </label>
+                        <input type="range" class="form-range" id="noiseThreshold" 
+                               min="0" max="1" step="0.1" value="0.2"
+                               onchange="document.getElementById('noiseValue').textContent = this.value">
+                        <small class="form-text text-muted">
+                            0.0 = específico | 1.0 = genérico
+                        </small>
+                    </div>
+                    
+                    <button class="btn btn-primary" onclick="generateModel()" id="generateModelBtn">
+                        <i class="fas fa-play"></i> Gerar Modelo
+                    </button>
+                    
+                    <button class="btn btn-outline-primary ms-2" onclick="visualizeModel()" id="visualizeModelBtn" disabled>
+                        <i class="fas fa-external-link-alt"></i> Visualizar Modelo
+                    </button>
+                    
+                    <div id="modelResult" class="mt-3" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-lg-6">
+            <div class="card shadow-sm">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="fas fa-check-double"></i> Análise de Conformidade</h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted">
+                        Executa <strong>Token-Based Replay</strong> para um par estudante+tarefa específico.
+                    </p>
+                    
+                    <!-- Aviso de compatibilidade -->
+                    <div class="alert alert-warning" id="conformanceCompatibilityWarning" style="display: none;">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <strong>Atenção:</strong> Modelo gerado para a tarefa 
+                        <strong id="currentModelScope"></strong>. 
+                        A análise será executada apenas para esta tarefa.
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="taskFilter" class="form-label">
+                            Tarefa <span class="badge bg-secondary">Auto-preenchido</span>
+                        </label>
+                        <select class="form-select" id="taskFilter" disabled>
+                            <option value="">Gere um modelo primeiro</option>
+                        </select>
+                        <small class="form-text text-muted" id="conformanceFilterInfo">
+                            A tarefa será definida automaticamente após gerar o modelo.
+                        </small>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="studentFilter" class="form-label">Estudante <span class="text-danger">*</span></label>
+                        <select class="form-select" id="studentFilter" disabled>
+                            <option value="">Gere um modelo primeiro</option>
+                        </select>
+                        <small class="form-text text-muted">
+                            Apenas estudantes com eventos na tarefa selecionada.
+                        </small>
+                    </div>
+                    
+                    <button class="btn btn-success" onclick="analyzeConformance()" id="analyzeBtn" disabled>
+                        <i class="fas fa-play"></i> Analisar Conformidade
+                    </button>
+                    
+                    <button class="btn btn-outline-success ms-2" onclick="visualizeTrajectory()" id="visualizeTrajectoryBtn" disabled>
+                        <i class="fas fa-route"></i> Ver Trajetória
+                    </button>
+                    
+                    <small class="form-text text-muted d-block mt-2">
+                        <i class="fas fa-info-circle"></i> Gere um modelo primeiro
+                    </small>
+                    
+                    <div id="conformanceResult" class="mt-3" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+// Estado global do modelo gerado
+let currentModelScope = null;
+
+// Carregar tarefas disponíveis ao iniciar a página
+document.addEventListener('DOMContentLoaded', function() {
+    loadAvailableTasks();
+    
+    // Inicializar tooltips do Bootstrap
+    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.map(function (tooltipTriggerEl) {
+        return new bootstrap.Tooltip(tooltipTriggerEl);
+    });
+});
+
+function loadAvailableTasks() {
+    const infoSpan = document.getElementById('modelScopeInfo');
+    const optgroup = document.getElementById('modelScopeOptgroup');
+    
+    if (!infoSpan || !optgroup) {
+        console.warn('Elementos de task loading não encontrados');
+        return;
+    }
+    
+    fetch('/api/process_mining/available_tasks', {
+        method: 'GET',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success && data.tasks && data.tasks.length > 0) {
+            optgroup.innerHTML = '';
+            data.tasks.forEach(task => {
+                const option = document.createElement('option');
+                option.value = task.task_id;
+                option.textContent = `${task.task_id} (${task.event_count} eventos, ${task.student_count} estudantes)`;
+                optgroup.appendChild(option);
+            });
+            
+            infoSpan.innerHTML = `<i class="fas fa-check-circle text-success"></i> ${data.tasks.length} tarefas disponíveis (${data.global_stats.total_events} eventos total)`;
+        } else {
+            infoSpan.innerHTML = '<i class="fas fa-exclamation-triangle text-warning"></i> Nenhuma tarefa encontrada';
+        }
+    })
+    .catch(error => {
+        console.error('Erro ao carregar tarefas:', error);
+        infoSpan.innerHTML = '<i class="fas fa-exclamation-circle text-danger"></i> Erro ao carregar tarefas';
+    });
+}
+
+function generateModel() {
+    const btn = document.getElementById('generateModelBtn');
+    const resultDiv = document.getElementById('modelResult');
+    const noiseInput = document.getElementById('noiseThreshold');
+    const scopeSelect = document.getElementById('modelScopeSelect');
+    
+    if (!btn || !resultDiv || !noiseInput) {
+        console.error('Elementos necessários não encontrados no DOM');
+        return;
+    }
+    
+    const noise = parseFloat(noiseInput.value);
+    const taskId = scopeSelect ? scopeSelect.value : null;
+    
+    // Validação: tarefa é obrigatória
+    if (!taskId) {
+        resultDiv.className = 'alert alert-warning mt-3';
+        resultDiv.innerHTML = '<i class="fas fa-exclamation-triangle"></i> <strong>Tarefa é obrigatória.</strong> Selecione uma tarefa para gerar o modelo.';
+        resultDiv.style.display = 'block';
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Gerando...';
+    resultDiv.style.display = 'none';
+    
+    fetch('/api/process_mining/generate_model', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            noise_threshold: noise,
+            task_id: taskId
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-play"></i> Gerar Modelo';
+        
+        if (data.success) {
+            // Armazenar escopo do modelo gerado
+            currentModelScope = data.model_info.task_id;
+            
+            // Atualizar UI de compatibilidade (auto-preencher tarefa)
+            updateConformanceTaskAndStudents(currentModelScope);
+            
+            // Habilitar botões de análise e visualização
+            document.getElementById('analyzeBtn').disabled = false;
+            document.getElementById('visualizeModelBtn').disabled = false;
+            
+            const scopeLabel = `📋 ${currentModelScope}`;
+            resultDiv.className = 'alert alert-success mt-3';
+            resultDiv.innerHTML = `
+                <h6><i class="fas fa-check-circle"></i> Modelo Gerado!</h6>
+                <small class="text-muted">Clique em "Visualizar Modelo" para ver a Rede de Petri.</small>
+            `;
+        } else {
+            resultDiv.className = 'alert alert-danger mt-3';
+            resultDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${data.error}`;
+        }
+        resultDiv.style.display = 'block';
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-play"></i> Gerar Modelo';
+        resultDiv.className = 'alert alert-danger mt-3';
+        resultDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> Erro: ${error}`;
+        resultDiv.style.display = 'block';
+    });
+}
+
+function updateCompatibilityWarnings(modelScope) {
+    const warningDiv = document.getElementById('conformanceCompatibilityWarning');
+    const scopeSpan = document.getElementById('currentModelScope');
+    const filterInfo = document.getElementById('conformanceFilterInfo');
+    const taskFilter = document.getElementById('taskFilter');
+    
+    // Verificar se elementos existem antes de acessá-los
+    if (!warningDiv || !scopeSpan || !filterInfo || !taskFilter) {
+        console.warn('Alguns elementos de compatibilidade não encontrados no DOM');
+        return;
+    }
+    
+    if (modelScope) {
+        // Modelo específico - mostrar aviso e restringir análise
+        warningDiv.style.display = 'block';
+        scopeSpan.textContent = modelScope;
+        
+        // Limitar dropdown de tarefas ao escopo do modelo
+        taskFilter.value = modelScope;
+        taskFilter.disabled = true;
+        
+        filterInfo.innerHTML = `<i class="fas fa-lock"></i> Análise restrita ao escopo do modelo: <strong>${modelScope}</strong>`;
+    } else {
+        // Modelo global - liberar análise para qualquer tarefa
+        warningDiv.style.display = 'none';
+        taskFilter.disabled = false;
+        filterInfo.innerHTML = 'Selecione a tarefa para análise.';
+    }
+}
+
+function updateConformanceTaskAndStudents(taskId) {
+    const taskFilter = document.getElementById('taskFilter');
+    const studentFilter = document.getElementById('studentFilter');
+    const warningDiv = document.getElementById('conformanceCompatibilityWarning');
+    const scopeSpan = document.getElementById('currentModelScope');
+    
+    if (!taskFilter || !studentFilter) {
+        console.warn('Elementos de conformidade não encontrados');
+        return;
+    }
+    
+    // Atualizar tarefa (auto-preenchido e desabilitado)
+    taskFilter.innerHTML = `<option value="${taskId}">${taskId}</option>`;
+    taskFilter.value = taskId;
+    taskFilter.disabled = true;
+    
+    // Mostrar aviso
+    if (warningDiv && scopeSpan) {
+        warningDiv.style.display = 'block';
+        scopeSpan.textContent = taskId;
+    }
+    
+    // Carregar estudantes da tarefa
+    studentFilter.innerHTML = '<option value="">Carregando estudantes...</option>';
+    studentFilter.disabled = true;
+    
+    fetch(`/api/process_mining/students_by_task/${taskId}`, {
+        method: 'GET',
+        headers: {'Content-Type': 'application/json'}
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success && data.students && data.students.length > 0) {
+            studentFilter.innerHTML = '<option value="">Selecione um estudante</option>';
+            data.students.forEach(student => {
+                const option = document.createElement('option');
+                option.value = student.student_hash;
+                option.textContent = `${student.student_name || 'Unknown'} (${student.event_count} eventos)`;
+                studentFilter.appendChild(option);
+            });
+            studentFilter.disabled = false;
+        } else {
+            studentFilter.innerHTML = '<option value="">Nenhum estudante encontrado</option>';
+        }
+    })
+    .catch(error => {
+        console.error('Erro ao carregar estudantes:', error);
+        studentFilter.innerHTML = '<option value="">Erro ao carregar</option>';
+    });
+}
+
+function visualizeModel() {
+    window.open('/api/process_mining/visualize_global', '_blank');
+}
+
+function analyzeConformance() {
+    const btn = document.getElementById('analyzeBtn');
+    const resultDiv = document.getElementById('conformanceResult');
+    const taskId = document.getElementById('taskFilter').value;
+    const studentHash = document.getElementById('studentFilter').value;
+    
+    // Validação de campos obrigatórios
+    if (!taskId) {
+        resultDiv.className = 'alert alert-warning mt-3';
+        resultDiv.innerHTML = '<i class="fas fa-exclamation-triangle"></i> <strong>Tarefa</strong> não definida. Gere um modelo primeiro.';
+        resultDiv.style.display = 'block';
+        return;
+    }
+    
+    if (!studentHash) {
+        resultDiv.className = 'alert alert-warning mt-3';
+        resultDiv.innerHTML = '<i class="fas fa-exclamation-triangle"></i> <strong>Estudante</strong> é obrigatório.';
+        resultDiv.style.display = 'block';
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analisando...';
+    resultDiv.style.display = 'none';
+    
+    fetch('/api/process_mining/conformance_analysis', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            task_id: taskId,
+            student_hash: studentHash
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-play"></i> Analisar Conformidade';
+        
+        if (data.success) {
+            const modelScopeLabel = `📋 ${data.model_scope}`;
+            
+            // Habilitar botão de visualização de trajetória
+            document.getElementById('visualizeTrajectoryBtn').disabled = false;
+            
+            resultDiv.className = 'alert alert-success mt-3';
+            resultDiv.innerHTML = `
+                <h6><i class="fas fa-check-circle"></i> Análise Concluída!</h6>
+                <small class="text-muted">Clique em "Ver Trajetória" para visualizar o caminho do estudante.</small>
+            `;
+        } else {
+            resultDiv.className = 'alert alert-danger mt-3';
+            resultDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${data.error}`;
+        }
+        resultDiv.style.display = 'block';
+    })
+    .catch(error => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-play"></i> Analisar Conformidade';
+        resultDiv.className = 'alert alert-danger mt-3';
+        resultDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> Erro: ${error}`;
+        resultDiv.style.display = 'block';
+    });
+}
+
+function visualizeTrajectory() {
+    const studentHash = document.getElementById('studentFilter').value;
+    const taskId = document.getElementById('taskFilter').value;
+    
+    if (!studentHash || !taskId) {
+        alert('Selecione um estudante e uma tarefa primeiro.');
+        return;
+    }
+    
+    window.open(`/api/process_mining/visualize_student/${studentHash}/${taskId}`, '_blank');
+}
+</script>
+{% endblock %}

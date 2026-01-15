@@ -11,6 +11,9 @@ from .tko_to_xes import TKOToXESConverter
 from .process_discovery import ProcessDiscovery, ProcessDiscoveryResult
 from .conformance_checker import ConformanceChecker, ConformanceResult, ConformanceCheckingError
 from .pattern_detector import BehavioralPatternDetector, BehavioralPattern
+from .model_generator import ProcessModelGenerator, ModelGenerationError
+from .conformance_replayer import ConformanceReplayer, ConformanceMetrics, ReplayError
+from .visualizations import ProcessVisualizer
 
 __all__ = [
     'ProcessAnalyzer',
@@ -23,4 +26,10 @@ __all__ = [
     'ConformanceCheckingError',
     'BehavioralPatternDetector',
     'BehavioralPattern',
+    'ProcessModelGenerator',
+    'ModelGenerationError',
+    'ConformanceReplayer',
+    'ConformanceMetrics',
+    'ReplayError',
+    'ProcessVisualizer',
 ]

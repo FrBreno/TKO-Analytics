@@ -68,7 +68,7 @@ class SessionDetector:
         timeout_minutes: Timeout em minutos para considerar nova sessão
     """
     
-    def __init__(self, timeout_minutes: int = 30):
+    def __init__(self, timeout_minutes: int = 60):
         """
         Inicializa detector de sessões.
         
@@ -93,7 +93,7 @@ class SessionDetector:
         Args:
             events: Lista de eventos ordenados por timestamp
             case_id: ID do caso
-            student_id: ID do estudante (será hasheado)
+            student_id: Hash do estudante (student_hash da tabela events)
         
         Returns:
             Lista de sessões detectadas
@@ -108,8 +108,8 @@ class SessionDetector:
         # Valida ordenação
         self._validate_event_order(events)
         
-        # Hash do student_id
-        student_hash = self._hash_student_id(student_id)
+        # student_id já vem hasheado do banco de dados
+        student_hash = student_id
         
         # Detecta sessões
         sessions = []

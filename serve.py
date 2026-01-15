@@ -9,10 +9,17 @@ Example:
     python serve.py --help
 """
 import sys
+import os
 import argparse
 from pathlib import Path
 from src.dashboard import run_server
 from src.etl.init_db import init_database
+
+# Adicionar Graphviz ao PATH automaticamente
+graphviz_path = r'C:\Program Files\Graphviz\bin'
+if graphviz_path not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = graphviz_path + os.pathsep + os.environ.get('PATH', '')
+    print(f"[INFO] Graphviz adicionado ao PATH: {graphviz_path}")
 
 
 def main():

@@ -38,7 +38,12 @@ def create_app(db_path: str) -> Flask:
         Aplicação Flask configurada
     """
     app = Flask(__name__)
+    # Garantir caminho absoluto
+    db_path = str(Path(db_path).resolve())
     app.config['DB_PATH'] = db_path
+    
+    logger.info("[create_app] - Database path configured",
+               db_path=db_path)
     
     # Configurar SECRET_KEY para sessões
     secret_key = os.getenv('FLASK_SECRET_KEY')

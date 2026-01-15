@@ -19,10 +19,14 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="/">Home</a>
+                        <a class="nav-link" href="/">
+                            <i class="fas fa-home"></i> Home
+                        </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/cohort">Cohort</a>
+                        <a class="nav-link" href="/process_mining">
+                            <i class="fas fa-project-diagram"></i> Process Mining
+                        </a>
                     </li>
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" id="dataDropdown" role="button" data-bs-toggle="dropdown">
@@ -30,7 +34,7 @@
                         </a>
                         <ul class="dropdown-menu">
                             <li><a class="dropdown-item" href="/import">
-                                <i class="fas fa-file-import"></i> Importar Dados TKO
+                                <i class="fas fa-file-import"></i> Importar Dados
                             </a></li>
                             <li><hr class="dropdown-divider"></li>
                             <li><a class="dropdown-item text-danger" href="#" data-bs-toggle="modal" data-bs-target="#clearModal">
@@ -59,30 +63,72 @@
     </div>
     
     <div class="modal fade" id="clearModal" tabindex="-1">
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-lg">
             <div class="modal-content">
                 <div class="modal-header bg-danger text-white">
-                    <h5 class="modal-title"><i class="fas fa-exclamation-triangle"></i> Limpar Banco de Dados</h5>
+                    <h5 class="modal-title"><i class="fas fa-exclamation-triangle"></i> Limpar Dados</h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
-                    <p><strong>⚠️ ATENÇÃO: Esta ação não pode ser desfeita!</strong></p>
-                    <p>Isso irá apagar permanentemente:</p>
-                    <ul>
-                        <li>Todos os eventos importados</li>
-                        <li>Todas as sessões detectadas</li>
-                        <li>Todas as métricas calculadas</li>
-                        <li>Todos os snapshots de código</li>
-                    </ul>
-                    <p class="text-muted">Você terá que reimportar e reprocessar todos os dados do zero.</p>
+                    <p><strong>⚠️ ATENÇÃO: Estas ações não podem ser desfeitas!</strong></p>
+                    <p class="mb-3">Escolha o tipo de limpeza que deseja realizar:</p>
+                    
+                    <!-- Opção 1: Limpar MODEL -->
+                    <div class="card mb-3 border-primary">
+                        <div class="card-body">
+                            <h6 class="card-title">
+                                <i class="fas fa-project-diagram text-primary"></i> Limpar Dados MODEL
+                            </h6>
+                            <p class="card-text small mb-2">
+                                Remove eventos MODEL, modelo de processo descoberto (PM) e dados relacionados.
+                                Os dados ANALYSIS permanecem intactos.
+                            </p>
+                            <form method="POST" action="/clear_model_data" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-outline-primary" onclick="return confirm('Confirma a exclusão dos dados MODEL?')">
+                                    <i class="fas fa-trash"></i> Limpar MODEL
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    
+                    <!-- Opção 2: Limpar ANALYSIS -->
+                    <div class="card mb-3 border-success">
+                        <div class="card-body">
+                            <h6 class="card-title">
+                                <i class="fas fa-chart-line text-success"></i> Limpar Dados ANALYSIS
+                            </h6>
+                            <p class="card-text small mb-2">
+                                Remove eventos ANALYSIS, sessões detectadas e métricas calculadas.
+                                Os dados MODEL e o processo descoberto permanecem intactos.
+                            </p>
+                            <form method="POST" action="/clear_analysis_data" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-outline-success" onclick="return confirm('Confirma a exclusão dos dados ANALYSIS?')">
+                                    <i class="fas fa-trash"></i> Limpar ANALYSIS
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    
+                    <!-- Opção 3: Limpar TUDO -->
+                    <div class="card border-danger">
+                        <div class="card-body">
+                            <h6 class="card-title">
+                                <i class="fas fa-database text-danger"></i> Limpar TODOS os Dados
+                            </h6>
+                            <p class="card-text small mb-2">
+                                Remove <strong>TUDO</strong>: eventos MODEL e ANALYSIS, modelo PM, sessões, métricas, snapshots.
+                                O sistema volta ao estado inicial (como se nada tivesse sido importado).
+                            </p>
+                            <form method="POST" action="/clear_database" style="display: inline;">
+                                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('⚠️ CONFIRMA A EXCLUSÃO TOTAL? Isso apagará MODEL e ANALYSIS!')">
+                                    <i class="fas fa-trash-alt"></i> Limpar TUDO
+                                </button>
+                            </form>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                    <form method="POST" action="/clear_database" style="display: inline;">
-                        <button type="submit" class="btn btn-danger">
-                            <i class="fas fa-trash"></i> Sim, Limpar Tudo
-                        </button>
-                    </form>
                 </div>
             </div>
         </div>
@@ -96,6 +142,18 @@
     </footer>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Auto-dismiss flash messages após 10 segundos
+        document.addEventListener('DOMContentLoaded', function() {
+            const alerts = document.querySelectorAll('.alert:not(.alert-danger)');
+            alerts.forEach(function(alert) {
+                setTimeout(function() {
+                    const bsAlert = new bootstrap.Alert(alert);
+                    bsAlert.close();
+                }, 10000);
+            });
+        });
+    </script>
     {% block extra_js %}{% endblock %}
 </body>
 </html>

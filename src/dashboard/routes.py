@@ -4,6 +4,7 @@ Rotas do dashboard Flask.
 
 import os
 import csv
+import json
 import sqlite3
 import structlog
 import plotly.graph_objects as go
@@ -496,8 +497,87 @@ def register_routes(app: Flask):
                         role_label = "MODEL (geração de processo)" if dataset_role == "model" else "ANALYSIS (análise comportamental)"
                         flash(f'Dados carregados no banco: {total_loaded} eventos de {len(pydantic_by_student)} estudante(s). Dataset: {role_label}', 'success')
                         
-                        # Se for ANALYSIS, processar métricas automaticamente
+                        # Se for ANALYSIS, processar code tracking (snapshots e patches)
                         if dataset_role == 'analysis':
+                            try:
+                                logger.info("Loading code tracking data for ANALYSIS dataset")
+                                from src.tko_integration.parser import TrackingParser
+                                
+                                total_snapshots = 0
+                                total_tasks = 0
+                                
+                                # Reprocessar scan para acessar repositórios de estudantes
+                                for turma in scan.turmas:
+                                    for block in turma.blocks:
+                                        for student in block.students:
+                                            if not student.valid or not student.tko_dir:
+                                                continue
+                                            
+                                            track_dir = student.tko_dir / 'track'
+                                            if not track_dir.exists():
+                                                continue
+                                            
+                                            student_hash = transformer.pseudonymize_student_id(student.username)
+                                            
+                                            # Processar cada tarefa no track/
+                                            for task_dir in track_dir.iterdir():
+                                                if not task_dir.is_dir():
+                                                    continue
+                                                
+                                                task_key = task_dir.name
+                                                
+                                                # Buscar arquivo draft.*.json
+                                                draft_json = None
+                                                for f in task_dir.glob('draft.*.json'):
+                                                    draft_json = f
+                                                    break
+                                                
+                                                if not draft_json:
+                                                    continue
+                                                
+                                                # Parse patches history
+                                                patches = TrackingParser.parse_patches_history(draft_json, task_key)
+                                                
+                                                if not patches:
+                                                    continue
+                                                
+                                                # Gerar case_id compatível com eventos
+                                                case_id = f"case_{int(time.time())}_{student_hash[:8]}"
+                                                
+                                                # Carregar snapshots
+                                                try:
+                                                    loaded_snaps = loader.load_code_snapshots(
+                                                        snapshots=patches,
+                                                        student_id=student_hash,  # Já hasheado
+                                                        case_id=case_id,
+                                                        student_name=student.username
+                                                    )
+                                                    total_snapshots += loaded_snaps
+                                                    total_tasks += 1
+                                                    
+                                                    logger.info("Loaded snapshots for task",
+                                                              student=student.username[:12],
+                                                              task=task_key,
+                                                              snapshots=loaded_snaps)
+                                                except Exception as e:
+                                                    logger.error("Failed to load snapshots",
+                                                               student=student.username,
+                                                               task=task_key,
+                                                               error=str(e))
+                                
+                                if total_snapshots > 0:
+                                    logger.info("Code tracking load complete",
+                                              total_snapshots=total_snapshots,
+                                              tasks=total_tasks)
+                                    flash(f'✅ Code tracking carregado: {total_snapshots} snapshots/patches de {total_tasks} tarefa(s).', 'success')
+                                else:
+                                    logger.info("No code tracking data found")
+                                    
+                            except Exception as e:
+                                logger.error("Code tracking load failed", error=str(e), exc_info=True)
+                                flash(f'⚠️ Aviso: Falha ao carregar code tracking: {str(e)}', 'warning')
+                            
+                            # Processar métricas automaticamente
                             try:
                                 logger.info("Auto-processing metrics for ANALYSIS dataset")
                                 from src.etl.engine import ETLEngine
@@ -1358,53 +1438,121 @@ def register_routes(app: Flask):
                        task_id=task_id or "ALL_TASKS",
                        scope=scope_label)
             
-            # Cria visualização com DFG já gerado
-            visualizer = ProcessVisualizer()
-            title = f"V1: Modelo de Processo - {scope_label} (Dataset MODEL)"
-            
-            svg = visualizer.visualize_global_dfg(
-                dfg=dfg_reconverted,
-                start_activities=dfg_data['start_activities'],
-                end_activities=dfg_data['end_activities'],
-                title=title
-            )
-            
-            # Buscar eventos MODEL que geraram o modelo
+            # Buscar traces MODEL agregados (por case_id) ANTES de gerar SVG
+            # para obter o número correto de traces
             conn = sqlite3.connect(current_app.config['DB_PATH'])
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
             if task_id:
                 cursor.execute("""
-                    SELECT timestamp, activity, event_type, student_hash, student_name, metadata
-                    FROM model_events
+                    SELECT 
+                        case_id,
+                        student_name,
+                        student_hash,
+                        COUNT(*) as event_count,
+                        MIN(timestamp) as first_timestamp,
+                        MAX(timestamp) as last_timestamp,
+                        (
+                            SELECT activity 
+                            FROM model_events me2 
+                            WHERE me2.case_id = me.case_id 
+                            ORDER BY timestamp ASC 
+                            LIMIT 1
+                        ) as first_event,
+                        (
+                            SELECT activity 
+                            FROM model_events me3 
+                            WHERE me3.case_id = me.case_id 
+                            ORDER BY timestamp DESC 
+                            LIMIT 1
+                        ) as last_event
+                    FROM model_events me
                     WHERE task_id = ?
-                    ORDER BY timestamp ASC
+                    GROUP BY case_id, student_name, student_hash
+                    ORDER BY first_timestamp ASC
                 """, (task_id,))
             else:
                 cursor.execute("""
-                    SELECT timestamp, activity, event_type, student_hash, student_name, task_id, metadata
-                    FROM model_events
-                    ORDER BY timestamp ASC
+                    SELECT 
+                        case_id,
+                        student_name,
+                        student_hash,
+                        task_id,
+                        COUNT(*) as event_count,
+                        MIN(timestamp) as first_timestamp,
+                        MAX(timestamp) as last_timestamp,
+                        (
+                            SELECT activity 
+                            FROM model_events me2 
+                            WHERE me2.case_id = me.case_id 
+                            ORDER BY timestamp ASC 
+                            LIMIT 1
+                        ) as first_event,
+                        (
+                            SELECT activity 
+                            FROM model_events me3 
+                            WHERE me3.case_id = me.case_id 
+                            ORDER BY timestamp DESC 
+                            LIMIT 1
+                        ) as last_event
+                    FROM model_events me
+                    GROUP BY case_id, student_name, student_hash, task_id
+                    ORDER BY first_timestamp ASC
                 """)
             
-            model_events = cursor.fetchall()
+            traces = cursor.fetchall()
+            num_traces = len(traces)
             conn.close()
             
-            # Criar HTML da listagem de eventos
-            events_html = '<div class="events-list"><h3>Eventos MODEL (Ordem Cronológica)</h3><table>'
-            events_html += '<thead><tr><th>#</th><th>Timestamp</th><th>Atividade</th><th>Tipo</th><th>Estudante</th>'
+            # Agora gerar SVG com o número correto de traces
+            visualizer = ProcessVisualizer()
+            title = f"V1: Modelo de Processo - {scope_label} (Dataset MODEL)"
+            
+            logger.info("[visualize_global_process] - Generating SVG with trace count",
+                       num_traces=num_traces)
+            
+            svg = visualizer.visualize_global_dfg(
+                dfg=dfg_reconverted,
+                start_activities=dfg_data['start_activities'],
+                end_activities=dfg_data['end_activities'],
+                title=title,
+                num_traces=num_traces
+            )
+            
+            # Criar HTML da listagem de traces agregados
+            from datetime import datetime
+            events_html = '<div class="events-list"><h3>Traces MODEL (Agregados por Estudante)</h3><table>'
+            events_html += '<thead><tr><th>#</th><th>Estudante</th><th>Eventos</th><th>Duração</th><th>Início</th><th>Fim</th><th>Primeiro Evento</th><th>Último Evento</th>'
             if not task_id:
                 events_html += '<th>Tarefa</th>'
             events_html += '</tr></thead><tbody>'
             
-            for idx, event in enumerate(model_events, 1):
-                ts = event['timestamp'][:19] if event['timestamp'] else ''
-                student_display = event['student_name'] if event['student_name'] else f"{event['student_hash'][:12]}..."
-                events_html += f'<tr><td>{idx}</td><td>{ts}</td><td>{event["activity"]}</td>'
-                events_html += f'<td>{event["event_type"]}</td><td>{student_display}</td>'
+            for idx, trace in enumerate(traces, 1):
+                student_display = trace['student_name'] if trace['student_name'] else f"{trace['student_hash'][:12]}..."
+                
+                # Calcular duração
+                try:
+                    start = datetime.fromisoformat(trace['first_timestamp'].replace('Z', '+00:00'))
+                    end = datetime.fromisoformat(trace['last_timestamp'].replace('Z', '+00:00'))
+                    duration_seconds = (end - start).total_seconds()
+                    if duration_seconds < 60:
+                        duration_str = f"{duration_seconds:.0f}s"
+                    elif duration_seconds < 3600:
+                        duration_str = f"{duration_seconds/60:.1f}min"
+                    else:
+                        duration_str = f"{duration_seconds/3600:.1f}h"
+                except:
+                    duration_str = "N/A"
+                
+                first_ts = trace['first_timestamp'][:19] if trace['first_timestamp'] else ''
+                last_ts = trace['last_timestamp'][:19] if trace['last_timestamp'] else ''
+                
+                events_html += f'<tr><td>{idx}</td><td>{student_display}</td><td>{trace["event_count"]}</td>'
+                events_html += f'<td>{duration_str}</td><td>{first_ts}</td><td>{last_ts}</td>'
+                events_html += f'<td>{trace["first_event"]}</td><td>{trace["last_event"]}</td>'
                 if not task_id:
-                    events_html += f'<td>{event["task_id"]}</td>'
+                    events_html += f'<td>{trace["task_id"]}</td>'
                 events_html += '</tr>'
             
             events_html += '</tbody></table></div>'
@@ -1489,9 +1637,88 @@ def register_routes(app: Flask):
             border-radius: 3px;
             font-size: 12px;
         }}
+        .legend-card {{
+            margin-bottom: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .legend-card h3 {{
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: #333;
+            font-size: 1.2rem;
+        }}
+        .legend-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }}
+        .legend-item {{
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            border-radius: 4px;
+            background: #f8f9fa;
+        }}
+        .legend-color {{
+            width: 30px;
+            height: 30px;
+            border-radius: 4px;
+            margin-right: 12px;
+            border: 1px solid #ddd;
+        }}
+        .legend-text {{
+            flex: 1;
+        }}
+        .legend-label {{
+            font-weight: bold;
+            font-size: 0.9rem;
+            color: #333;
+            margin-bottom: 2px;
+        }}
+        .legend-description {{
+            font-size: 0.75rem;
+            color: #666;
+        }}
     </style>
 </head>
 <body>
+    <div class="legend-card">
+        <h3>🎨 Legenda de Cores - Frequência Média de Atividades</h3>
+        <div class="legend-grid">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #F0F0F0;"></div>
+                <div class="legend-text">
+                    <div class="legend-label">Baixa (≤5)</div>
+                    <div class="legend-description">Pouco frequente</div>
+                </div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #D3D3D3;"></div>
+                <div class="legend-text">
+                    <div class="legend-label">Média (6-20)</div>
+                    <div class="legend-description">Uso moderado</div>
+                </div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #FF8C00;"></div>
+                <div class="legend-text">
+                    <div class="legend-label">Alta (21-50)</div>
+                    <div class="legend-description">Muito frequente</div>
+                </div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #FF0000;"></div>
+                <div class="legend-text">
+                    <div class="legend-label">Excessiva (>50)</div>
+                    <div class="legend-description">Loop excessivo ⚠️</div>
+                </div>
+            </div>
+        </div>
+    </div>
     <div class="controls">
         <button onclick="panZoomInstance.zoom(1.2)">Zoom In (+)</button>
         <button onclick="panZoomInstance.zoom(0.8)">Zoom Out (-)</button>
@@ -1724,26 +1951,7 @@ def register_routes(app: Flask):
             
             analysis_events_html += '</tbody></table></div>'
             
-            # Eventos MODEL (referência) - reutilizar conexão já aberta
-            cursor.execute("""
-                SELECT timestamp, activity, event_type, student_hash, student_name
-                FROM model_events
-                WHERE task_id = ?
-                ORDER BY timestamp ASC
-            """, (task_id,))
-            
-            model_events = cursor.fetchall()
             conn.close()
-            
-            model_events_html = '<div class="events-column"><h4>Eventos do Modelo (MODEL)</h4><table>'
-            model_events_html += '<thead><tr><th>#</th><th>Timestamp</th><th>Atividade</th><th>Tipo</th><th>Estudante</th></tr></thead><tbody>'
-            
-            for idx, event in enumerate(model_events, 1):
-                ts = event['timestamp'][:19] if event['timestamp'] else ''
-                student_display = event['student_name'] if event['student_name'] else f"{event['student_hash'][:12]}..."
-                model_events_html += f'<tr><td>{idx}</td><td>{ts}</td><td>{event["activity"]}</td><td>{event["event_type"]}</td><td>{student_display}</td></tr>'
-            
-            model_events_html += '</tbody></table></div>'
             
             # Retorna HTML com SVG interativo
             title = f"V2: Trajetória Individual - Estudante {student_hash[:8]} - Tarefa {task_id}"
@@ -1903,12 +2111,9 @@ def register_routes(app: Flask):
             margin-top: 8px;
         }}
         .events-container {{
-            display: flex;
-            gap: 20px;
             margin-top: 30px;
         }}
         .events-column {{
-            flex: 1;
             padding: 20px;
             background: white;
             border-radius: 4px;
@@ -1972,7 +2177,6 @@ def register_routes(app: Flask):
     
     <div class="events-container">
         {analysis_events_html}
-        {model_events_html}
     </div>
     <script>
         var panZoomInstanceTraj = svgPanZoom('#svg-container-trajectory svg', {{
@@ -2007,6 +2211,194 @@ def register_routes(app: Flask):
                 'success': False,
                 'error': str(e)
             }), 500
+    
+    @app.route('/code-evolution')
+    def code_evolution_page():
+        """Página de visualização de evolução de código dos estudantes."""
+        conn = get_db()
+        
+        # Verificar se há snapshots no banco
+        snapshot_count = conn.execute('SELECT COUNT(*) as count FROM code_snapshots').fetchone()['count']
+        
+        if snapshot_count == 0:
+            conn.close()
+            flash('Nenhum snapshot de código encontrado. Importe dados ANALYSIS primeiro.', 'warning')
+            return redirect(url_for('index'))
+        
+        # Buscar estatísticas agregadas por tarefa e estudante
+        query = """
+        WITH task_stats AS (
+            SELECT 
+                cs.case_id,
+                cs.student_hash,
+                cs.student_name,
+                cs.task_id,
+                cs.line_count as final_lines,
+                cs.timestamp as last_edit,
+                COUNT(DISTINCT cp.id) as total_patches,
+                MIN(cp.timestamp) as first_edit,
+                ROUND(
+                    (julianday(MAX(cp.timestamp)) - julianday(MIN(cp.timestamp))) * 24 * 60,
+                    1
+                ) as duration_minutes
+            FROM code_snapshots cs
+            LEFT JOIN code_patches cp ON cp.case_id = cs.case_id AND cp.task_id = cs.task_id
+            GROUP BY cs.case_id, cs.student_hash, cs.student_name, cs.task_id
+        )
+        SELECT 
+            student_name,
+            student_hash,
+            task_id,
+            final_lines,
+            total_patches,
+            COALESCE(duration_minutes, 0) as duration_minutes,
+            ROUND(final_lines * 1.0 / NULLIF(total_patches, 0), 2) as avg_lines_per_patch,
+            first_edit,
+            last_edit
+        FROM task_stats
+        ORDER BY task_id, student_name
+        """
+        
+        evolution_data = conn.execute(query).fetchall()
+        
+        # Contar totais
+        total_snapshots = snapshot_count
+        total_patches = conn.execute('SELECT COUNT(*) as count FROM code_patches').fetchone()['count']
+        total_students = conn.execute(
+            'SELECT COUNT(DISTINCT student_hash) as count FROM code_snapshots'
+        ).fetchone()['count']
+        total_tasks = conn.execute(
+            'SELECT COUNT(DISTINCT task_id) as count FROM code_snapshots'
+        ).fetchone()['count']
+        
+        conn.close()
+        
+        return render_template(
+            'code_evolution.html',
+            evolution_data=evolution_data,
+            stats={
+                'total_snapshots': total_snapshots,
+                'total_patches': total_patches,
+                'total_students': total_students,
+                'total_tasks': total_tasks
+            }
+        )
+    
+    @app.route('/code-viewer')
+    def code_viewer_page():
+        """Página de visualização de código individual com histórico de patches."""
+        student_hash = request.args.get('student')
+        task_id = request.args.get('task')
+        
+        if not student_hash or not task_id:
+            flash('Parâmetros inválidos: student e task são obrigatórios', 'error')
+            return redirect(url_for('code_evolution_page'))
+        
+        conn = get_db()
+        
+        # Buscar informações do estudante
+        student_info = conn.execute("""
+            SELECT DISTINCT student_name, case_id
+            FROM code_snapshots
+            WHERE student_hash = ? AND task_id = ?
+            LIMIT 1
+        """, (student_hash, task_id)).fetchone()
+        
+        if not student_info:
+            conn.close()
+            flash(f'Nenhum snapshot encontrado para {student_hash} na tarefa {task_id}', 'error')
+            return redirect(url_for('code_evolution_page'))
+        
+        # Buscar snapshot final (código completo)
+        snapshot = conn.execute("""
+            SELECT id, timestamp, line_count, metadata, file_path
+            FROM code_snapshots
+            WHERE student_hash = ? AND task_id = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (student_hash, task_id)).fetchone()
+        
+        # Buscar histórico de patches com conteúdo
+        patches = conn.execute("""
+            SELECT 
+                id,
+                timestamp,
+                line_count_delta,
+                patch_text,
+                previous_snapshot_id,
+                metadata
+            FROM code_patches
+            WHERE case_id = ? AND task_id = ?
+            ORDER BY timestamp ASC
+        """, (student_info['case_id'], task_id)).fetchall()
+        
+        conn.close()
+        
+        # Extrair código do metadata do snapshot
+        snapshot_metadata = json.loads(snapshot['metadata'])
+        final_code = snapshot_metadata.get('code', '')
+        
+        # Preparar dados dos patches para o template com métricas temporais
+        from datetime import datetime
+        patches_data = []
+        timeline_data = []  # Para gráfico Plotly
+        cumulative_lines = 0
+        
+        for idx, patch in enumerate(patches, 1):
+            patch_meta = json.loads(patch['metadata']) if patch['metadata'] else {}
+            timestamp_obj = datetime.fromisoformat(patch['timestamp'])
+            
+            # Calcular linha acumulativa
+            cumulative_lines = patch['line_count_delta']
+            
+            # Calcular tempo desde patch anterior
+            time_since_previous = None
+            if idx > 1:
+                prev_timestamp = datetime.fromisoformat(patches[idx-2]['timestamp'])
+                time_delta = (timestamp_obj - prev_timestamp).total_seconds() / 60  # minutos
+                time_since_previous = round(time_delta, 1)
+            
+            patches_data.append({
+                'sequence': idx,
+                'id': patch['id'][:12],
+                'timestamp': patch['timestamp'],
+                'timestamp_display': timestamp_obj.strftime('%d/%m/%Y %H:%M:%S'),
+                'line_count': patch['line_count_delta'],
+                'patch_text': patch['patch_text'],
+                'is_full': patch_meta.get('is_full_snapshot', False),
+                'time_since_previous': time_since_previous
+            })
+            
+            # Dados para gráfico Plotly
+            timeline_data.append({
+                'x': patch['timestamp'],
+                'y': cumulative_lines,
+                'sequence': idx,
+                'hover': f"Edição #{idx}<br>{cumulative_lines} linhas<br>{timestamp_obj.strftime('%d/%m/%Y %H:%M')}"
+            })
+        
+        # Adicionar snapshot final ao timeline
+        final_timestamp = datetime.fromisoformat(snapshot['timestamp'])
+        timeline_data.append({
+            'x': snapshot['timestamp'],
+            'y': snapshot['line_count'],
+            'sequence': len(patches) + 1,
+            'hover': f"Snapshot Final<br>{snapshot['line_count']} linhas<br>{final_timestamp.strftime('%d/%m/%Y %H:%M')}"
+        })
+        
+        return render_template(
+            'code_viewer.html',
+            student_name=student_info['student_name'],
+            student_hash=student_hash,
+            task_id=task_id,
+            final_code=final_code,
+            final_lines=snapshot['line_count'],
+            last_update=snapshot['timestamp'],
+            patches=patches_data,
+            timeline_data=json.dumps(timeline_data),
+            total_patches=len(patches)
+        )
+
     
     @app.route('/process_mining')
     def process_mining_page():

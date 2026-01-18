@@ -64,6 +64,8 @@ def clear_analysis_data(db_path: str) -> dict:
     - analysis_events
     - sessions (associadas a analysis)
     - metrics (associadas a analysis)
+    - code_snapshots (associadas a analysis)
+    - code_patches (associadas a analysis)
     - Manter model_events intacto
     
     Args:
@@ -74,6 +76,7 @@ def clear_analysis_data(db_path: str) -> dict:
     """
     db_path = Path(db_path).resolve()
     conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = ON")
     
     try:
         # Contar antes
@@ -81,23 +84,56 @@ def clear_analysis_data(db_path: str) -> dict:
         sessions_before = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
         metrics_before = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
         
-        # Limpar
-        conn.execute("DELETE FROM analysis_events")
-        conn.execute("DELETE FROM sessions")
+        # Contar code tracking (pode não existir em bancos antigos)
+        try:
+            snapshots_before = conn.execute("SELECT COUNT(*) FROM code_snapshots").fetchone()[0]
+            patches_before = conn.execute("SELECT COUNT(*) FROM code_patches").fetchone()[0]
+        except sqlite3.OperationalError:
+            snapshots_before = 0
+            patches_before = 0
+            logger.warning("Code tracking tables not found (old schema?)")
+        
+        # Limpar (ordem importa por foreign keys)
+        # 1. Patches primeiro (referencia snapshots)
+        if patches_before > 0:
+            conn.execute("DELETE FROM code_patches")
+        
+        # 2. Snapshots
+        if snapshots_before > 0:
+            conn.execute("DELETE FROM code_snapshots")
+        
+        # 3. Métricas, sessões, eventos
         conn.execute("DELETE FROM metrics")
+        conn.execute("DELETE FROM sessions")
+        conn.execute("DELETE FROM analysis_events")
+        
         conn.commit()
         
         logger.info("Analysis data cleared",
                    events_removed=analysis_events_before,
                    sessions_removed=sessions_before,
-                   metrics_removed=metrics_before)
+                   metrics_removed=metrics_before,
+                   snapshots_removed=snapshots_before,
+                   patches_removed=patches_before)
+        
+        message_parts = [
+            f'{analysis_events_before} eventos ANALYSIS',
+            f'{sessions_before} sessões',
+            f'{metrics_before} métricas'
+        ]
+        
+        if snapshots_before > 0 or patches_before > 0:
+            message_parts.append(f'{snapshots_before} snapshots')
+            message_parts.append(f'{patches_before} patches')
         
         return {
             'success': True,
             'analysis_events_removed': analysis_events_before,
             'sessions_removed': sessions_before,
             'metrics_removed': metrics_before,
-            'message': f'{analysis_events_before} eventos ANALYSIS, {sessions_before} sessões e {metrics_before} métricas removidos'
+            'code_snapshots_removed': snapshots_before,
+            'code_patches_removed': patches_before,
+            'message': ' e '.join(message_parts) + ' removidos'
         }
         
     except sqlite3.Error as e:

@@ -1,0 +1,698 @@
+{% extends "base.html" %}
+
+{% block title %}Visualizar Código - {{ student_name }} - {{ task_id }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <!-- Header com botão de voltar -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <a href="/code-evolution" class="btn btn-outline-secondary mb-3">
+                <i class="fas fa-arrow-left"></i> Voltar para Evolução de Código
+            </a>
+            <h1 class="display-5">
+                <i class="fas fa-code text-primary"></i> 
+                Código: {{ task_id }}
+            </h1>
+            <p class="lead">
+                <strong>{{ student_name }}</strong>
+                <span class="text-muted"> - {{ student_hash[:12] }}</span>
+            </p>
+        </div>
+    </div>
+
+    <!-- Estatísticas do código -->
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card text-center" style="background-color: #e3f2fd;">
+                <div class="card-body">
+                    <h6 style="color: #555;">Linhas Totais</h6>
+                    <h2 style="color: #0056b3;">{{ final_lines }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center" style="background-color: #e8f5e9;">
+                <div class="card-body">
+                    <h6 style="color: #555;">Total de Edições</h6>
+                    <h2 style="color: #28a745;">{{ total_patches }}</h2>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center" style="background-color: #e0f7fa;">
+                <div class="card-body">
+                    <h6 style="color: #555;">Última Atualização</h6>
+                    <h4 style="color: #00838f;">{{ last_update[:10] }}</h4>
+                    <small style="color: #666;">{{ last_update[11:19] }}</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center" style="background-color: #fff3e0;">
+                <div class="card-body">
+                    <h6 style="color: #555;">Tamanho</h6>
+                    <h3 style="color: #f57c00;">{{ (final_code|length / 1024)|round(2) }} KB</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tabs: Código, Timeline e Histórico -->
+    <ul class="nav nav-tabs" id="codeViewerTabs" role="tablist">
+        <li class="nav-item">
+            <a class="nav-link active" id="code-tab" data-bs-toggle="tab" href="#code" role="tab">
+                <i class="fas fa-file-code"></i> Código Completo
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="timeline-tab" data-bs-toggle="tab" href="#timeline" role="tab">
+                <i class="fas fa-chart-line"></i> Timeline Interativa
+            </a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="history-tab" data-bs-toggle="tab" href="#history" role="tab">
+                <i class="fas fa-history"></i> Histórico de Edições ({{ total_patches }})
+            </a>
+        </li>
+    </ul>
+
+    <div class="tab-content border border-top-0 p-3 bg-white" id="codeViewerTabsContent">
+        <!-- Tab: Código Completo -->
+        <div class="tab-pane fade show active" id="code" role="tabpanel">
+            <div class="row mb-3">
+                <div class="col-12">
+                    <div class="btn-toolbar justify-content-between" role="toolbar">
+                        <div class="btn-group" role="group">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyCode()">
+                                <i class="fas fa-copy"></i> Copiar Código
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="downloadCode()">
+                                <i class="fas fa-download"></i> Download
+                            </button>
+                        </div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="lineNumbersToggle" checked>
+                            <label class="form-check-label" for="lineNumbersToggle">
+                                Mostrar números de linha
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="code-container">
+                <pre id="codeBlock" class="line-numbers"><code class="language-python">{{ final_code }}</code></pre>
+            </div>
+        </div>
+
+        <!-- Tab: Timeline Interativa -->
+        <div class="tab-pane fade" id="timeline" role="tabpanel">
+            <div class="alert alert-info mb-3">
+                <i class="fas fa-info-circle"></i>
+                <strong>Timeline Interativa:</strong> 
+                Use o slider para navegar entre diferentes estados do código ao longo do tempo. 
+                O gráfico mostra a evolução do número de linhas.
+            </div>
+
+            <!-- Gráfico de Evolução -->
+            <div class="card mb-3">
+                <div class="card-header" style="background-color: #0056b3; color: white;">
+                    <h6 class="mb-0"><i class="fas fa-chart-line"></i> Evolução do Código ao Longo do Tempo</h6>
+                </div>
+                <div class="card-body">
+                    <div id="timelinePlot" style="width: 100%; height: 300px;"></div>
+                </div>
+            </div>
+
+            <!-- Controles de Navegação -->
+            <div class="card mb-3">
+                <div class="card-header" style="background-color: #495057; color: white;">
+                    <h6 class="mb-0"><i class="fas fa-sliders-h"></i> Navegação Temporal</h6>
+                </div>
+                <div class="card-body">
+                    <div class="row align-items-center">
+                        <div class="col-md-2 text-center">
+                            <button class="btn btn-sm btn-outline-primary" id="prevPatch" title="Edição anterior">
+                                <i class="fas fa-chevron-left"></i> Anterior
+                            </button>
+                        </div>
+                        <div class="col-md-8">
+                            <input type="range" 
+                                   class="form-range w-100" 
+                                   id="timelineSlider" 
+                                   min="0" 
+                                   max="{{ patches|length - 1 }}" 
+                                   value="0" 
+                                   step="1">
+                            <div class="d-flex justify-content-between mt-1">
+                                <small class="text-muted">Início</small>
+                                <small class="text-muted">Fim</small>
+                            </div>
+                        </div>
+                        <div class="col-md-2 text-center">
+                            <button class="btn btn-sm btn-outline-primary" id="nextPatch" title="Próxima edição">
+                                Próxima <i class="fas fa-chevron-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Informações do Patch Atual -->
+                    <div class="mt-3 p-3 rounded" style="background-color: #f8f9fa; border: 1px solid #dee2e6;">
+                        <div class="row">
+                            <div class="col-md-3">
+                                <strong style="color: #333;">Edição:</strong> 
+                                <span id="currentSequence" class="badge" style="background-color: #0056b3; color: white;">1</span> 
+                                <span style="color: #333;">de {{ patches|length }}</span>
+                            </div>
+                            <div class="col-md-4">
+                                <strong style="color: #333;"><i class="fas fa-clock"></i> Timestamp:</strong>
+                                <span id="currentTimestamp" style="color: #555;">-</span>
+                            </div>
+                            <div class="col-md-2">
+                                <strong style="color: #333;"><i class="fas fa-list-ol"></i> Linhas:</strong>
+                                <span id="currentLines" class="badge" style="background-color: #17a2b8; color: white;">0</span>
+                            </div>
+                            <div class="col-md-3">
+                                <strong style="color: #333;"><i class="fas fa-stopwatch"></i> Desde anterior:</strong>
+                                <span id="timeSincePrevious" style="color: #666;">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Visualização do Diff -->
+            <div class="card">
+                <div class="card-header bg-dark text-white">
+                    <h6 class="mb-0"><i class="fas fa-code"></i> Mudanças no Código (Diff)</h6>
+                </div>
+                <div class="card-body p-0">
+                    <div id="diffViewer" class="diff-viewer">
+                        <pre><code id="diffContent" class="language-diff">Selecione uma edição no slider acima para ver as mudanças...</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Histórico de Edições -->
+        <div class="tab-pane fade" id="history" role="tabpanel">
+            <div class="alert alert-info">
+                <i class="fas fa-info-circle"></i>
+                <strong>Histórico de Patches:</strong> 
+                Cada patch representa uma edição incremental do código. 
+                O snapshot final contém o código completo mostrado na aba anterior.
+            </div>
+
+            {% if patches %}
+            <div class="timeline">
+                {% for patch in patches %}
+                <div class="timeline-item">
+                    <div class="timeline-marker {% if loop.last %}bg-success{% else %}bg-primary{% endif %}">
+                        {{ patch.sequence }}
+                    </div>
+                    <div class="timeline-content">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-8">
+                                        <h6 class="mb-1">
+                                            {% if loop.last %}
+                                                <i class="fas fa-camera text-success"></i> Snapshot Final
+                                            {% else %}
+                                                <i class="fas fa-edit text-primary"></i> Edição #{{ patch.sequence }}
+                                            {% endif %}
+                                        </h6>
+                                        <small class="text-muted">
+                                            <i class="fas fa-clock"></i> {{ patch.timestamp }}
+                                        </small>
+                                    </div>
+                                    <div class="col-md-4 text-right">
+                                        <span class="badge badge-pill {% if loop.last %}badge-success{% else %}badge-primary{% endif %}">
+                                            {{ patch.line_count }} linhas
+                                        </span>
+                                        <br>
+                                        <small class="text-muted">ID: {{ patch.id }}</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="alert alert-warning">
+                <i class="fas fa-exclamation-triangle"></i>
+                Nenhum patch incremental encontrado. Apenas snapshot final disponível.
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Metadados adicionais -->
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-header bg-light">
+                    <h6 class="mb-0"><i class="fas fa-info-circle"></i> Informações Técnicas</h6>
+                </div>
+                <div class="card-body">
+                    <dl class="row mb-0">
+                        <dt class="col-sm-3">Estudante:</dt>
+                        <dd class="col-sm-9">{{ student_name }} ({{ student_hash }})</dd>
+                        
+                        <dt class="col-sm-3">Tarefa:</dt>
+                        <dd class="col-sm-9"><code>{{ task_id }}</code></dd>
+                        
+                        <dt class="col-sm-3">Arquivo:</dt>
+                        <dd class="col-sm-9"><code>draft.py</code></dd>
+                        
+                        <dt class="col-sm-3">Timestamp Final:</dt>
+                        <dd class="col-sm-9">{{ last_update }}</dd>
+                        
+                        <dt class="col-sm-3">Total de Caracteres:</dt>
+                        <dd class="col-sm-9">{{ final_code|length }}</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- JavaScript -->
+<script>
+// Copy code to clipboard
+function copyCode() {
+    const code = document.getElementById('codeBlock').textContent;
+    navigator.clipboard.writeText(code).then(() => {
+        alert('Código copiado para a área de transferência!');
+    }).catch(err => {
+        console.error('Erro ao copiar:', err);
+        alert('Erro ao copiar código');
+    });
+}
+
+// Download code as file
+function downloadCode() {
+    const code = document.getElementById('codeBlock').textContent;
+    const blob = new Blob([code], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '{{ task_id }}_{{ student_hash[:8] }}.py';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+// Toggle line numbers
+document.getElementById('lineNumbersToggle').addEventListener('change', function() {
+    const pre = document.getElementById('codeBlock').parentElement;
+    if (this.checked) {
+        pre.classList.add('line-numbers');
+    } else {
+        pre.classList.remove('line-numbers');
+    }
+});
+
+// Bootstrap 5 tab activation
+document.addEventListener('DOMContentLoaded', function() {
+    // Inicializar timeline quando a aba for ativada
+    const timelineTabEl = document.getElementById('timeline-tab');
+    if (timelineTabEl) {
+        timelineTabEl.addEventListener('shown.bs.tab', function() {
+            if (!window.timelineInitialized) {
+                initTimeline();
+                window.timelineInitialized = true;
+            }
+        });
+    }
+});
+
+// Timeline Interativa - com tratamento de erro
+let timelineData = [];
+let patchesData = [];
+
+try {
+    timelineData = {{ timeline_data|safe }} || [];
+    patchesData = {{ patches|tojson }} || [];
+} catch (e) {
+    console.error('Erro ao carregar dados da timeline:', e);
+    timelineData = [];
+    patchesData = [];
+}
+
+function initTimeline() {
+    if (!timelineData || timelineData.length === 0) {
+        console.warn('Nenhum dado de timeline disponível');
+        return;
+    }
+    if (!patchesData || patchesData.length === 0) {
+        console.warn('Nenhum dado de patches disponível');
+        return;
+    }
+    // Criar gráfico Plotly
+    const trace = {
+        x: timelineData.map(d => d.x),
+        y: timelineData.map(d => d.y),
+        mode: 'lines+markers',
+        type: 'scatter',
+        name: 'Linhas de Código',
+        line: {
+            color: '#007bff',
+            width: 2
+        },
+        marker: {
+            size: 8,
+            color: '#007bff'
+        },
+        hovertemplate: timelineData.map(d => d.hover + '<extra></extra>')
+    };
+    
+    const layout = {
+        title: '',
+        xaxis: {
+            title: 'Tempo',
+            type: 'date'
+        },
+        yaxis: {
+            title: 'Número de Linhas'
+        },
+        hovermode: 'closest',
+        margin: { t: 20, b: 50, l: 60, r: 20 }
+    };
+    
+    Plotly.newPlot('timelinePlot', [trace], layout, {responsive: true});
+    
+    // Clique no gráfico para navegar
+    document.getElementById('timelinePlot').on('plotly_click', function(data) {
+        const pointIndex = data.points[0].pointNumber;
+        if (pointIndex < patchesData.length) {
+            document.getElementById('timelineSlider').value = pointIndex;
+            updateDiffView(pointIndex);
+        }
+    });
+    
+    // Inicializar com primeira edição
+    updateDiffView(0);
+}
+
+function updateDiffView(index) {
+    if (index < 0 || index >= patchesData.length) return;
+    
+    const patch = patchesData[index];
+    
+    // Atualizar informações
+    document.getElementById('currentSequence').textContent = patch.sequence;
+    document.getElementById('currentTimestamp').textContent = patch.timestamp_display || patch.timestamp;
+    document.getElementById('currentLines').textContent = patch.line_count;
+    
+    if (patch.time_since_previous) {
+        document.getElementById('timeSincePrevious').textContent = patch.time_since_previous + ' min';
+    } else {
+        document.getElementById('timeSincePrevious').textContent = '(primeira edição)';
+    }
+    
+    // Atualizar diff
+    const diffContent = document.getElementById('diffContent');
+    if (patch.patch_text && patch.patch_text.trim() !== '') {
+        diffContent.textContent = patch.patch_text;
+        diffContent.className = 'language-diff';
+    } else {
+        diffContent.textContent = '(Snapshot completo - sem diff disponível)';
+        diffContent.className = '';
+    }
+    
+    // Re-aplicar syntax highlighting
+    if (window.Prism) {
+        Prism.highlightElement(diffContent);
+    }
+}
+
+// Controles de navegação
+document.getElementById('timelineSlider')?.addEventListener('input', function(e) {
+    updateDiffView(parseInt(e.target.value));
+});
+
+document.getElementById('prevPatch')?.addEventListener('click', function() {
+    const slider = document.getElementById('timelineSlider');
+    const newValue = Math.max(0, parseInt(slider.value) - 1);
+    slider.value = newValue;
+    updateDiffView(newValue);
+});
+
+document.getElementById('nextPatch')?.addEventListener('click', function() {
+    const slider = document.getElementById('timelineSlider');
+    const maxValue = parseInt(slider.max);
+    const newValue = Math.min(maxValue, parseInt(slider.value) + 1);
+    slider.value = newValue;
+    updateDiffView(newValue);
+});
+
+</script>
+
+<!-- Plotly.js para gráficos interativos -->
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+<!-- Prism.js para syntax highlighting -->
+<link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+<link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.css" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/line-numbers/prism-line-numbers.min.js"></script>
+
+<style>
+/* Code container styling */
+.code-container {
+    background-color: #2d2d2d;
+    border-radius: 5px;
+    padding: 1rem;
+    overflow-x: auto;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+pre[class*="language-"] {
+    margin: 0;
+    background: transparent;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+code[class*="language-"] {
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    color: #abb2bf;
+}
+
+/* Ensure Prism theme colors for Python syntax */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+    color: #5c6370;
+}
+
+.token.punctuation {
+    color: #abb2bf;
+}
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol {
+    color: #d19a66;
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin {
+    color: #98c379;
+}
+
+.token.operator,
+.token.entity,
+.token.url,
+.language-css .token.string,
+.style .token.string,
+.token.variable {
+    color: #56b6c2;
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword,
+.token.function,
+.token.class-name {
+    color: #61afef;
+}
+
+.token.regex,
+.token.important {
+    color: #e06c75;
+}
+
+/* Timeline styling */
+.timeline {
+    position: relative;
+    padding: 20px 0;
+}
+
+.timeline::before {
+    content: '';
+    position: absolute;
+    left: 30px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #dee2e6;
+}
+
+.timeline-item {
+    position: relative;
+    padding-left: 70px;
+    padding-bottom: 30px;
+}
+
+.timeline-marker {
+    position: absolute;
+    left: 15px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 12px;
+    box-shadow: 0 0 0 4px white;
+    z-index: 10;
+}
+
+.timeline-content {
+    background: white;
+}
+
+.timeline-item:last-child {
+    padding-bottom: 0;
+}
+
+/* Card styling */
+.card {
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+    border: 1px solid rgba(0, 0, 0, 0.125);
+}
+
+/* Tab styling */
+.nav-tabs .nav-link {
+    color: #495057 !important;
+    border-bottom: 3px solid transparent;
+}
+
+.nav-tabs .nav-link.active {
+    color: #007bff !important;
+    background-color: white;
+    border-color: #dee2e6 #dee2e6 white;
+    border-bottom: 3px solid #007bff;
+}
+
+.nav-tabs .nav-link:hover {
+    border-color: #e9ecef #e9ecef #dee2e6;
+    color: #212529 !important;
+}
+
+/* Button toolbar spacing */
+.btn-toolbar {
+    margin-bottom: 1rem;
+}
+
+/* Scrollbar styling */
+.code-container::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.code-container::-webkit-scrollbar-track {
+    background: #1e1e1e;
+}
+
+.code-container::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 4px;
+}
+
+.code-container::-webkit-scrollbar-thumb:hover {
+    background: #777;
+}
+
+/* Diff viewer styling */
+.diff-viewer {
+    background-color: #2d2d2d;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.diff-viewer pre {
+    margin: 0;
+    padding: 15px;
+    background: transparent;
+    color: #abb2bf;
+}
+
+/* Slider styling */
+.form-range {
+    height: 8px;
+}
+
+.form-range::-webkit-slider-thumb {
+    width: 20px;
+    height: 20px;
+    background: #007bff;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.form-range::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    background: #007bff;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+/* Timeline controls */
+#timelinePlot {
+    background: white;
+    border-radius: 5px;
+}
+
+/* Badge styling */
+.badge {
+    font-size: 0.9em;
+    padding: 0.4em 0.6em;
+}
+
+/* Prism diff highlighting */
+.token.deleted {
+    background-color: rgba(255, 0, 0, 0.1);
+    color: #ff6b6b !important;
+}
+
+.token.inserted {
+    background-color: rgba(0, 255, 0, 0.1);
+    color: #51cf66 !important;
+}
+
+.token.diff {
+    color: #868e96;
+}
+
+</style>
+{% endblock %}

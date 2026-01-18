@@ -109,11 +109,13 @@ def init_database(db_path: str = "./data/src.db") -> None:
             timestamp TEXT NOT NULL,
             line_count INTEGER NOT NULL,
             storage_key TEXT NOT NULL,
-            compression TEXT DEFAULT 'gzip',
+            compression TEXT DEFAULT 'none',
+            metadata TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_snapshots_case_timestamp ON code_snapshots(case_id, timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_snapshots_storage_key ON code_snapshots(storage_key);
+        CREATE INDEX IF NOT EXISTS idx_snapshots_task ON code_snapshots(task_id);
         
         -- Code Patches
         CREATE TABLE IF NOT EXISTS code_patches (
@@ -127,11 +129,13 @@ def init_database(db_path: str = "./data/src.db") -> None:
             previous_snapshot_id TEXT,
             patch_text TEXT NOT NULL,
             line_count_delta INTEGER NOT NULL,
+            metadata TEXT,
             created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (previous_snapshot_id) REFERENCES code_snapshots(id)
+            FOREIGN KEY (previous_snapshot_id) REFERENCES code_patches(id)
         );
         CREATE INDEX IF NOT EXISTS idx_patches_case_timestamp ON code_patches(case_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_patches_snapshot ON code_patches(previous_snapshot_id);
+        CREATE INDEX IF NOT EXISTS idx_patches_task ON code_patches(task_id);
         
         -- Metrics
         CREATE TABLE IF NOT EXISTS metrics (

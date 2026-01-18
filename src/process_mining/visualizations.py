@@ -132,7 +132,8 @@ class ProcessVisualizer:
         highlighted_trace: Optional[List[str]] = None,
         event_counts: Optional[Dict[str, int]] = None,
         event_mode_counts: Optional[Dict[str, Dict[str, int]]] = None,
-        show_place_tokens: bool = True
+        show_place_tokens: bool = True,
+        num_traces: Optional[int] = None
     ) -> str:
         """
         Visualiza Rede de Petri usando PM4Py nativo (Graphviz) com contagens e tokens.
@@ -146,6 +147,7 @@ class ProcessVisualizer:
             event_counts: Contagem total por atividade {'task_navigation': 9, ...}
             event_mode_counts: Contagem por modo {'test_execution': {'FULL': 59, 'FREE': 1}}
             show_place_tokens: Se True, mostra tokens acumulados nos lugares
+            num_traces: Número de traces no modelo (para calcular médias). Se não fornecido, será estimado
             
         Returns:
             String SVG da visualização
@@ -164,7 +166,18 @@ class ProcessVisualizer:
             "bgcolor": "white",
         }
         
-        # Decorar transições com contagens e cores
+        # Usar num_traces fornecido ou fazer estimativa
+        if num_traces is None:
+            if event_counts:
+                # Estimativa: usar a atividade menos frequente como proxy de número mínimo de traces
+                min_count = min(event_counts.values()) if event_counts else 1
+                num_traces = max(min_count, 1)  # pelo menos 1 trace
+                logger.warning("[ProcessVisualizer.visualize_petri_net] - num_traces não fornecido, usando estimativa",
+                             estimated_traces=num_traces)
+            else:
+                num_traces = 1
+        
+        # Decorar transições com médias e cores
         decorations = {}
         for transition in net.transitions:
             if not transition.label:
@@ -173,18 +186,19 @@ class ProcessVisualizer:
             activity = transition.label
             is_highlighted = highlighted_trace and activity in highlighted_trace
             count = event_counts.get(activity, 0) if event_counts else 0
+            avg = count / num_traces if num_traces > 0 else 0
             
-            # Label com contagem total
-            if count > 0:
-                label = f"{activity}\n({count}x)"
+            # Label com média
+            if avg > 0:
+                label = f"{activity}\n(μ={avg:.1f})"
             else:
                 label = activity
             
-            # Cor baseada em frequência
-            color = self._get_color_by_frequency(count, is_highlighted)
+            # Cor baseada em frequência média
+            color = self._get_color_by_frequency(avg, is_highlighted)
             
-            # Tooltip com detalhamento por modo
-            tooltip = f"{activity}\\nTotal: {count} execução" + ("ões" if count != 1 else "")
+            # Tooltip com detalhamento incluindo média
+            tooltip = f"{activity}\\nTotal: {count} | Média: {avg:.1f} por trace"
             
             if event_mode_counts and activity in event_mode_counts:
                 mode_details = event_mode_counts[activity]
@@ -199,9 +213,9 @@ class ProcessVisualizer:
                     if free_ratio < 0.1:
                         tooltip += "\\n⚠️ Poucos testes locais (FREE)"
             
-            # Adicionar alerta se loop excessivo
-            if count > 50:
-                tooltip += "\\n⚠️ Loop excessivo!"
+            # Adicionar alerta se média indicar loop excessivo
+            if avg > 10:
+                tooltip += "\\n⚠️ Loop excessivo (média alta)!"
             
             decorations[transition] = {
                 "label": label,
@@ -294,7 +308,8 @@ class ProcessVisualizer:
         dfg: Dict[Tuple[str, str], int],
         start_activities: Dict[str, int],
         end_activities: Dict[str, int],
-        title: str = "V1: Processo Global (Rede de Petri)"
+        title: str = "V1: Processo Global (Rede de Petri)",
+        num_traces: Optional[int] = None
     ) -> str:
         """
         V1: Visualiza processo global usando Rede de Petri derivada do DFG.
@@ -306,6 +321,7 @@ class ProcessVisualizer:
             start_activities: Atividades iniciais com frequências
             end_activities: Atividades finais com frequências
             title: Título do gráfico
+            num_traces: Número de traces no modelo (para calcular médias)
             
         Returns:
             String SVG da visualização
@@ -326,7 +342,8 @@ class ProcessVisualizer:
             initial_marking, 
             final_marking, 
             title=title,
-            event_counts=event_counts
+            event_counts=event_counts,
+            num_traces=num_traces
         )
     
     def _extract_mode_counts_from_trace(self, trace: Trace) -> Dict[str, Dict[str, int]]:

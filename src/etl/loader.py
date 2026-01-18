@@ -3,6 +3,7 @@ Loader para carregar eventos TKO no banco de dados SQLite.
 
 Este módulo implementa o carregamento batch de eventos validados
 no banco de dados, com suporte a transações e tratamento de erros.
+Inclui suporte para snapshots de código e patches.
 """
 
 import json
@@ -12,8 +13,10 @@ import hashlib
 import structlog
 from pathlib import Path
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 
 from src.models import BaseEvent, ExecEvent, MoveEvent, SelfEvent
+from src.tko_integration.parser import CodeSnapshot
 
 logger = structlog.get_logger()
 
@@ -98,17 +101,13 @@ class SQLiteLoader:
         if dataset_role not in ("model", "analysis"):
             raise LoadError(f"Invalid dataset_role: {dataset_role}. Must be 'model' or 'analysis'")
         
-        # Gera case_id se não fornecido
-        if case_id is None:
-            case_id = f"case_{uuid.uuid4().hex[:12]}"
-        
         # Hash do student_id para anonimização
         student_hash = self._hash_student_id(student_id)
-        
+
         # Extrai student_name do primeiro evento se não fornecido
         if student_name is None and events and hasattr(events[0], 'student_name'):
             student_name = events[0].student_name
-        
+
         logger.info("[SQLiteLoader.load_events] - load_events_started",
                    events=len(events),
                    case_id=case_id,
@@ -116,38 +115,67 @@ class SQLiteLoader:
                    student_name=student_name,
                    dataset_role=dataset_role,
                    db_path=str(self.db_path))
-        
+
         conn = sqlite3.connect(str(self.db_path))
         conn.execute("PRAGMA foreign_keys = ON")
-        
+
         logger.debug("[SQLiteLoader.load_events] - Database connection established")
-        
+
         try:
             cursor = conn.cursor()
-            
-            # Carrega em batches
-            for i in range(0, len(events), self.batch_size):
-                batch = events[i:i + self.batch_size]
-                self._load_batch(cursor, batch, case_id, student_hash, student_name, session_id, dataset_role)
-            
+
+                # Forçar case_id por (student_hash, task_id) para cada grupo de eventos.
+                # Isso garante que cada combinação (estudante, tarefa) gere um case/trace distinto.
+                # Agrupa eventos por task_id
+            events_by_task: Dict[str, List[BaseEvent]] = {}
+            for ev in events:
+                tid = getattr(ev, 'task_id', None)
+                if tid is None:
+                    # Se algum evento não tem task_id, atribui um valor vazio para agrupar em um caso separado
+                    tid = 'unknown_task'
+                events_by_task.setdefault(tid, []).append(ev)
+
+            total_expected = 0
+            persisted_summary = {}
+
+            for tid, group in events_by_task.items():
+                generated_case_id = f"{student_hash}_{tid}"
+                # Insere o grupo em batches
+                for i in range(0, len(group), self.batch_size):
+                    batch = group[i:i + self.batch_size]
+                    self._load_batch(cursor, batch, generated_case_id, student_hash, student_name, session_id, dataset_role)
+
+                # Conta eventos esperados para este case
+                total_expected += len(group)
+                persisted_summary[generated_case_id] = len(group)
+
             conn.commit()
-            self.events_loaded = len(events)
-            
+            self.events_loaded = total_expected
+
             logger.info("[SQLiteLoader.load_events] - load_events_completed",
                        loaded=self.events_loaded,
                        skipped=self.events_skipped,
                        dataset_role=dataset_role,
                        db_path=str(self.db_path))
-            
-            # Verificar se realmente foi persistido na tabela correta
+
+            # Verificação: soma de eventos persistidos para os case_ids gerados
             table_name = f"{dataset_role}_events"
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE case_id = ?", (case_id,))
-            persisted_count = cursor.fetchone()[0]
-            logger.info("[SQLiteLoader.load_events] - Verification check",
-                       persisted=persisted_count,
-                       expected=self.events_loaded,
+            total_persisted = 0
+            for cid, expected in persisted_summary.items():
+                cursor.execute(f"SELECT COUNT(*) FROM {table_name} WHERE case_id = ?", (cid,))
+                persisted = cursor.fetchone()[0]
+                total_persisted += persisted
+                logger.info("[SQLiteLoader.load_events] - Verification per_case",
+                           case_id=cid,
+                           expected=expected,
+                           persisted=persisted,
+                           table=table_name)
+
+            logger.info("[SQLiteLoader.load_events] - Verification summary",
+                       total_expected=total_expected,
+                       total_persisted=total_persisted,
                        table=table_name)
-            
+
             return self.events_loaded
             
         except sqlite3.Error as e:
@@ -405,4 +433,184 @@ class SQLiteLoader:
         rows = cursor.fetchall()
         conn.close()
         
-        return [dict(row) for row in rows]
+        return [dict(row) for row in rows]    
+    def load_code_snapshots(
+        self,
+        snapshots: List[CodeSnapshot],
+        student_id: str,
+        case_id: str,
+        student_name: Optional[str] = None
+    ) -> int:
+        """
+        Carrega lista de snapshots de código no banco de dados.
+        
+        Estratégia de armazenamento híbrida:
+        - Último snapshot (código completo): tabela code_snapshots
+        - Patches incrementais: tabela code_patches com referência ao anterior
+        
+        Args:
+            snapshots: Lista de snapshots ordenados cronologicamente (mais antigo primeiro)
+            student_id: ID do estudante (será hasheado)
+            case_id: ID do caso
+            student_name: Nome do estudante (opcional)
+            
+        Returns:
+            Número de snapshots/patches carregados
+            
+        Raises:
+            LoadError: Se houver erro fatal no carregamento
+        """
+        if not snapshots:
+            logger.warning("[SQLiteLoader.load_code_snapshots] - No snapshots to load")
+            return 0
+        
+        student_hash = self._hash_student_id(student_id)
+        
+        logger.info("[SQLiteLoader.load_code_snapshots] - Loading snapshots",
+                   total=len(snapshots),
+                   case_id=case_id,
+                   student_hash=student_hash[:8],
+                   task_id=snapshots[0].task_key if snapshots else None)
+        
+        conn = sqlite3.connect(str(self.db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        
+        total_loaded = 0
+        
+        try:
+            cursor = conn.cursor()
+            
+            # Determinar qual é o último snapshot (código completo)
+            last_snapshot = snapshots[-1]
+            incremental_patches = snapshots[:-1]
+            
+            # 1. Inserir patches incrementais em code_patches
+            previous_snapshot_id = None
+            for idx, patch in enumerate(incremental_patches):
+                patch_id = self._generate_snapshot_id(
+                    student_hash, patch.task_key, patch.timestamp, 
+                    file_path="draft.py", is_patch=True
+                )
+                
+                metadata = {
+                    "version": 1,
+                    "is_full_snapshot": False,
+                    "patch_sequence": idx + 1,
+                    "total_patches": len(incremental_patches)
+                }
+                
+                try:
+                    cursor.execute("""
+                        INSERT INTO code_patches (
+                            id, case_id, student_hash, student_name, task_id,
+                            file_path, timestamp, previous_snapshot_id,
+                            patch_text, line_count_delta, metadata, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    """, (
+                        patch_id,
+                        case_id,
+                        student_hash,
+                        student_name,
+                        patch.task_key,
+                        "draft.py",
+                        patch.timestamp.isoformat(),
+                        previous_snapshot_id,
+                        patch.diff_from_previous or "",
+                        patch.size,
+                        json.dumps(metadata, ensure_ascii=False)
+                    ))
+                    total_loaded += 1
+                    previous_snapshot_id = patch_id
+                except sqlite3.IntegrityError as e:
+                    logger.debug("[SQLiteLoader.load_code_snapshots] - Patch skipped",
+                                patch_id=patch_id, reason=str(e))
+            
+            # 2. Inserir snapshot completo em code_snapshots
+            snapshot_id = self._generate_snapshot_id(
+                student_hash, last_snapshot.task_key, last_snapshot.timestamp,
+                file_path="draft.py", is_patch=False
+            )
+            
+            # Storage inline no metadata (Opção A escolhida)
+            storage_metadata = {
+                "version": 1,
+                "is_full_snapshot": True,
+                "storage_type": "inline",
+                "code": last_snapshot.code,  # Código completo inline
+                "encoding": "utf-8",
+                "language": "python"
+            }
+            
+            try:
+                cursor.execute("""
+                    INSERT INTO code_snapshots (
+                        id, case_id, student_hash, student_name, task_id,
+                        file_path, timestamp, line_count,
+                        storage_key, compression, metadata, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """, (
+                    snapshot_id,
+                    case_id,
+                    student_hash,
+                    student_name,
+                    last_snapshot.task_key,
+                    "draft.py",
+                    last_snapshot.timestamp.isoformat(),
+                    last_snapshot.size,
+                    f"inline:{snapshot_id}",  # Storage key indica armazenamento inline
+                    "none",
+                    json.dumps(storage_metadata, ensure_ascii=False)
+                ))
+                total_loaded += 1
+            except sqlite3.IntegrityError as e:
+                logger.debug("[SQLiteLoader.load_code_snapshots] - Snapshot skipped",
+                            snapshot_id=snapshot_id, reason=str(e))
+            
+            conn.commit()
+            
+            logger.info("[SQLiteLoader.load_code_snapshots] - Load complete",
+                       total_loaded=total_loaded,
+                       patches=len(incremental_patches),
+                       full_snapshots=1)
+            
+            return total_loaded
+            
+        except sqlite3.Error as e:
+            conn.rollback()
+            raise LoadError(f"Database error loading snapshots: {e}") from e
+        finally:
+            conn.close()
+    
+    def _generate_snapshot_id(
+        self, 
+        student_hash: str, 
+        task_id: str, 
+        timestamp: datetime,
+        file_path: str = "draft.py",
+        is_patch: bool = False
+    ) -> str:
+        """
+        Gera ID único e determinístico para snapshot ou patch.
+        
+        Args:
+            student_hash: Hash do student_id
+            task_id: ID da tarefa
+            timestamp: Timestamp do snapshot
+            file_path: Caminho do arquivo
+            is_patch: True para patch, False para snapshot completo
+            
+        Returns:
+            ID no formato 'snap_<16_chars_hex>' ou 'patch_<16_chars_hex>'
+        """
+        key_parts = [
+            student_hash,
+            task_id,
+            timestamp.isoformat(),
+            file_path,
+            str(is_patch)
+        ]
+        
+        key = "|".join(key_parts)
+        hash_digest = hashlib.sha256(key.encode()).hexdigest()
+        prefix = "patch" if is_patch else "snap"
+        return f"{prefix}_{hash_digest[:16]}"

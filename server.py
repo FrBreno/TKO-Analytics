@@ -1,18 +1,25 @@
 """
-Script to serve TKO Analytics Dashboard
+TKO Analytics Dashboard Server
 
 Usage:
-    python serve.py [database_path]
+    python server.py [database_path]
 
 Example:
-    python serve.py src.db
-    python serve.py --help
+    python server.py src.db
+    python server.py --help
 """
 import sys
+import os
 import argparse
 from pathlib import Path
 from src.dashboard import run_server
 from src.etl.init_db import init_database
+
+# Adicionar Graphviz ao PATH automaticamente
+graphviz_path = r'C:\Program Files\Graphviz\bin'
+if graphviz_path not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = graphviz_path + os.pathsep + os.environ.get('PATH', '')
+    print(f"[INFO] Graphviz adicionado ao PATH: {graphviz_path}")
 
 
 def main():

@@ -120,26 +120,30 @@ class LogParser:
                 reason="Missing required field 'task'"
             )
         
-        # Identifica tipo de evento pelo campo 'mode'
+        # Extrai student_name se disponível (opcional)
+        student_name = row.get('student_name', '').strip() or None
+        
+        # Identifica tipo de evento pelo campo 'mode' ou 'event_type'
         mode = row.get('mode', '').strip().upper()
+        event_type = row.get('event_type', '').strip().upper()
+        
+        # Evento SELF pode ter mode vazio, usar event_type
+        if event_type == 'SELF' or mode == 'SELF':
+            return self._parse_self_event(row, timestamp, task_id, student_name)
         
         # Evento EXEC (mode: FULL, LOCK, FREE)
-        if mode in ['FULL', 'LOCK', 'FREE']:
-            return self._parse_exec_event(row, timestamp, task_id, mode)
+        elif mode in ['FULL', 'LOCK', 'FREE']:
+            return self._parse_exec_event(row, timestamp, task_id, mode, student_name)
         
         # Evento MOVE (mode: DOWN, PICK, BACK, EDIT)
         elif mode in ['DOWN', 'PICK', 'BACK', 'EDIT']:
-            return self._parse_move_event(row, timestamp, task_id, mode)
-        
-        # Evento SELF (mode: SELF)
-        elif mode == 'SELF':
-            return self._parse_self_event(row, timestamp, task_id)
+            return self._parse_move_event(row, timestamp, task_id, mode, student_name)
         
         else:
             raise ParseError(
                 line_num=0,
                 raw_line=str(row),
-                reason=f"Unknown mode: '{mode}'"
+                reason=f"Unknown mode: '{mode}' and event_type: '{event_type}'"
             )
     
     def _parse_exec_event(
@@ -147,7 +151,8 @@ class LogParser:
         row: dict, 
         timestamp: datetime, 
         task_id: str, 
-        mode: str
+        mode: str,
+        student_name: str = None
     ) -> ExecEvent:
         """Parseia evento de execução."""
         try:
@@ -165,6 +170,7 @@ class LogParser:
             return ExecEvent(
                 timestamp=timestamp,
                 task_id=task_id,
+                student_name=student_name,
                 mode=mode,
                 rate=rate,
                 size=size,
@@ -182,14 +188,16 @@ class LogParser:
         row: dict, 
         timestamp: datetime, 
         task_id: str, 
-        mode: str
+        mode: str,
+        student_name: str = None
     ) -> MoveEvent:
         """Parseia evento de navegação."""
         try:
             return MoveEvent.from_mode(
                 mode=mode,
                 timestamp=timestamp,
-                task_id=task_id
+                task_id=task_id,
+                student_name=student_name
             )
         except ValueError as e:
             raise ParseError(
@@ -202,12 +210,13 @@ class LogParser:
         self, 
         row: dict, 
         timestamp: datetime, 
-        task_id: str
+        task_id: str,
+        student_name: str = None
     ) -> SelfEvent:
         """Parseia evento de autoavaliação."""
         try:
             rate_str = row.get('rate', '').strip()
-            rate = int(rate_str) if rate_str else None
+            rate = int(rate_str) if rate_str else 0  # Default 0 se vazio
             
             autonomy_str = row.get('autonomy', '').strip()
             autonomy = int(autonomy_str) if autonomy_str else 0
@@ -224,6 +233,7 @@ class LogParser:
             return SelfEvent(
                 timestamp=timestamp,
                 task_id=task_id,
+                student_name=student_name,
                 rate=rate,
                 autonomy=autonomy,
                 help_human=help_human,

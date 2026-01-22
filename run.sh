@@ -37,5 +37,5 @@ fi
 echo -e "${BLUE}[2/2]${NC} Iniciando servidor Flask..."
 echo ""
 
-# Passar argumentos para serve.py (se fornecidos)
-python serve.py "$@"
+# Passar argumentos para server.py (se fornecidos)
+python server.py "$@"

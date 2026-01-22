@@ -31,6 +31,10 @@ class BaseEvent(BaseModel):
         max_length=100,
         description="Identificador da tarefa/atividade"
     )
+    student_name: Optional[str] = Field(
+        default=None,
+        description="Nome do estudante (opcional, extraído do CSV)"
+    )
     version: int = Field(
         default=1,
         alias='v',
@@ -61,8 +65,8 @@ class ExecEvent(BaseEvent):
     )
     size: int = Field(
         ...,
-        gt=0,
-        description="Número de linhas de código"
+        ge=0,
+        description="Número de linhas de código (pode ser 0 para código vazio)"
     )
     error: Optional[Literal['NONE', 'COMP', 'EXEC']] = Field(
         default='NONE',

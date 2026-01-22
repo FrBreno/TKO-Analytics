@@ -61,13 +61,14 @@ class TKOTransformer:
                 return task_key[len(prefix):]
         return task_key
     
-    def event_to_csv_row(self, event: TKOLogEvent, student_hash: str) -> Dict[str, Any]:
+    def event_to_csv_row(self, event: TKOLogEvent, student_hash: str, student_name: str = None) -> Dict[str, Any]:
         """
         Converte TKOLogEvent para dicionário de linha CSV.
         
         Args:
             event: Evento de log TKO
             student_hash: ID pseudonimizado do estudante
+            student_name: Nome do estudante (opcional)
             
         Returns:
             Dict com valores das colunas CSV
@@ -83,6 +84,7 @@ class TKOTransformer:
         return {
             'timestamp': event.timestamp.isoformat(),
             'student_id': student_hash,
+            'student_name': student_name or '',
             'task': task_id,
             'event_type': event.event_type,
             'mode': event.mode or '',
@@ -131,7 +133,7 @@ class TKOTransformer:
                         events = LogParser.parse_all_logs(log_dir)
                         
                         for event in events:
-                            row = self.event_to_csv_row(event, student_hash)
+                            row = self.event_to_csv_row(event, student_hash, student.username)
                             all_rows.append(row)
                             total_events += 1
                     
@@ -146,7 +148,7 @@ class TKOTransformer:
         all_rows.sort(key=lambda r: r['timestamp'])
         # Escrever CSV
         fieldnames = [
-            'timestamp', 'student_id', 'task', 'event_type', 'mode', 
+            'timestamp', 'student_id', 'student_name', 'task', 'event_type', 'mode', 
             'rate', 'size', 'human', 'iagen', 'guide', 'other', 'alone', 'study'
         ]
         
@@ -194,6 +196,7 @@ class TKOTransformer:
                 row = {
                     'timestamp': snapshot.timestamp.isoformat(),
                     'student_id': student_hash,
+                    'student_name': student.username,
                     'task': self.normalize_task_key(task_key),
                     'event_type': 'CODE_SNAPSHOT',
                     'mode': '',
@@ -230,13 +233,13 @@ class TKOTransformer:
             events = LogParser.parse_all_logs(log_dir)
             
             for event in events:
-                row = self.event_to_csv_row(event, student_hash)
+                row = self.event_to_csv_row(event, student_hash, student.username)
                 all_rows.append(row)
         
         # Ordenar e escrever
         all_rows.sort(key=lambda r: r['timestamp'])
         fieldnames = [
-            'timestamp', 'student_id', 'task', 'event_type', 'mode', 
+            'timestamp', 'student_id', 'student_name', 'task', 'event_type', 'mode', 
             'rate', 'size', 'human', 'iagen', 'guide', 'other', 'alone', 'study'
         ]
         output_path.parent.mkdir(parents=True, exist_ok=True)

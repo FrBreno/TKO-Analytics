@@ -159,7 +159,7 @@ def main():
         print(f"              loader.load_events(events, '{args.output}', 'aggregated')\"")
         print()
         print("   # Ou usar o dashboard")
-        print(f"   python serve.py {output_dir / 'tko_analytics.db'}")
+        print(f"   python server.py {output_dir / 'tko_analytics.db'}")
     else:
         print("Nenhum evento encontrado. Verifique se os diretórios .tko/log/ contêm arquivos de log.")
     

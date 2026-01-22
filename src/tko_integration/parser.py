@@ -10,6 +10,7 @@ Manipula:
 import yaml
 import json
 import structlog
+import urllib.parse
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -244,6 +245,46 @@ class TrackingParser:
     """Parser para dados de rastreamento TKO (.tko/track/)."""
     
     @staticmethod
+    def _decode_patch_content(encoded_content: str) -> str:
+        """
+        Decodifica conteúdo de patch URL-encoded.
+        
+        Patches são armazenados com encoding especial (%0A para newline, %22 para aspas, etc).
+        """
+        try:
+            # URL decode
+            decoded = urllib.parse.unquote(encoded_content)
+            return decoded
+        except Exception as e:
+            logger.warning("[TrackingParser._decode_patch_content] - Decode failed", error=str(e))
+            return encoded_content
+    
+    @staticmethod
+    def _parse_timestamp_from_label(label: str) -> Optional[datetime]:
+        """
+        Extrai timestamp de label no formato 'YYYY-MM-DD_HH-MM-SS'.
+        
+        Exemplo: '2025-09-16_19-39-25' -> datetime(2025, 9, 16, 19, 39, 25)
+        """
+        try:
+            # Formato: YYYY-MM-DD_HH-MM-SS
+            timestamp_str = label.replace('_', ' ').replace('-', ':', 2)
+            # Agora: YYYY:MM:DD HH:MM:SS -> parse precisa ajustar
+            parts = label.split('_')
+            if len(parts) != 2:
+                return None
+            
+            date_part = parts[0]  # YYYY-MM-DD
+            time_part = parts[1].replace('-', ':')  # HH:MM:SS
+            
+            timestamp_str = f"{date_part} {time_part}"
+            return datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            logger.warning("[TrackingParser._parse_timestamp_from_label] - Parse failed", 
+                          label=label, error=str(e))
+            return None
+    
+    @staticmethod
     def parse_draft_json(file_path: Path, task_key: str) -> Optional[CodeSnapshot]:
         """
         Analisa arquivo draft.py.json para extrair snapshot de código atual.
@@ -275,6 +316,83 @@ class TrackingParser:
         except Exception as e:
             logger.warn(f"[TrackingParser.parse_draft_json] - Falha ao analisar {file_path}: {e}")
             return None
+    
+    @staticmethod
+    def parse_patches_history(file_path: Path, task_key: str) -> List[CodeSnapshot]:
+        """
+        Analisa arquivo draft.py.json para extrair histórico completo de patches.
+        
+        O arquivo contém array 'patches' com:
+        - label: timestamp no formato YYYY-MM-DD_HH-MM-SS
+        - content: diff em formato unificado (URL-encoded) OU código completo (último)
+        - lines: número de linhas após aplicar o patch
+        
+        Args:
+            file_path: Caminho para draft.py.json
+            task_key: Identificador da tarefa
+            
+        Retorna:
+            Lista de CodeSnapshot ordenados cronologicamente (mais antigo primeiro)
+        """
+        if not file_path.exists():
+            return []
+        
+        snapshots = []
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            patches = data.get('patches', [])
+            
+            if not patches:
+                logger.info("[TrackingParser.parse_patches_history] - No patches found", 
+                           file=str(file_path))
+                return []
+            
+            for idx, patch in enumerate(patches):
+                label = patch.get('label', '')
+                content = patch.get('content', '')
+                lines_str = patch.get('lines', '0')
+                
+                # Parse timestamp do label
+                timestamp = TrackingParser._parse_timestamp_from_label(label)
+                if not timestamp:
+                    logger.warning("[TrackingParser.parse_patches_history] - Invalid label", 
+                                  label=label, task=task_key)
+                    continue
+                
+                # Parse line count
+                try:
+                    line_count = int(lines_str)
+                except (ValueError, TypeError):
+                    line_count = 0
+                
+                # Decodificar conteúdo (URL-encoded)
+                decoded_content = TrackingParser._decode_patch_content(content)
+                
+                # Último patch geralmente contém código completo, não diff
+                is_last = (idx == len(patches) - 1)
+                
+                snapshot = CodeSnapshot(
+                    timestamp=timestamp,
+                    task_key=task_key,
+                    code=decoded_content,
+                    size=line_count,
+                    diff_from_previous=None if is_last else decoded_content
+                )
+                
+                snapshots.append(snapshot)
+            
+            logger.info("[TrackingParser.parse_patches_history] - Parsed patches", 
+                       task=task_key, total=len(snapshots))
+            
+            return snapshots
+            
+        except Exception as e:
+            logger.error("[TrackingParser.parse_patches_history] - Parse failed", 
+                        file=str(file_path), error=str(e), exc_info=True)
+            return []
     
     @staticmethod
     def parse_track_csv(file_path: Path, task_key: str) -> List[CodeSnapshot]:
@@ -323,23 +441,30 @@ class TrackingParser:
         Analisa todos os dados de rastreamento de uma tarefa.
         
         Retorna:
-            Dict com 'draft' (snapshot atual) e 'history' (lista de snapshots)
+            Dict com 'draft' (snapshot atual), 'history' (lista de snapshots), 
+            e 'patches' (lista completa de patches do draft.py.json)
         """
         result = {
             'draft': None,
             'history': [],
+            'patches': [],  # NOVO: array completo de patches do .json
         }
         
         if not track_dir.exists():
             return result
         
-        # Analisar draft.py.json (ou draft.js.json, etc.)
-        for draft_file in track_dir.glob('draft.*'):
-            if draft_file.suffix == '.json':
-                result['draft'] = TrackingParser.parse_draft_json(draft_file, task_key)
-                break
+        # Analisar draft.py.json (ou draft.js.json, etc.) para patches
+        for draft_file in track_dir.glob('draft.*.json'):
+            # Parsear histórico de patches
+            result['patches'] = TrackingParser.parse_patches_history(draft_file, task_key)
+            
+            # Snapshot mais recente (último patch)
+            if result['patches']:
+                result['draft'] = result['patches'][-1]
+            
+            break  # Processa apenas o primeiro draft.*.json encontrado
         
-        # Analisar track.csv
+        # Analisar track.csv (legado, mantido para compatibilidade)
         track_csv = track_dir / 'track.csv'
         if track_csv.exists():
             result['history'] = TrackingParser.parse_track_csv(track_csv, task_key)

@@ -1,0 +1,350 @@
+{% extends "base.html" %}
+
+{% block title %}Evolução de Código - TKO Analytics{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <!-- Header -->
+    <div class="row mb-4">
+        <div class="col-12">
+            <h1 class="display-5">
+                <i class="fas fa-code-branch text-primary"></i> 
+                Evolução de Código
+            </h1>
+            <p class="text-muted">
+                Visualize o histórico de edições e snapshots do código dos estudantes
+            </p>
+        </div>
+    </div>
+
+    <!-- Statistics Cards -->
+    <!-- <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card bg-primary text-white">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <i class="fas fa-camera"></i> Snapshots
+                    </h5>
+                    <h2 class="mb-0">{{ stats.total_snapshots }}</h2>
+                    <small>códigos completos salvos</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-success text-white">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <i class="fas fa-edit"></i> Patches
+                    </h5>
+                    <h2 class="mb-0">{{ stats.total_patches }}</h2>
+                    <small>edições incrementais</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-info text-white">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <i class="fas fa-users"></i> Estudantes
+                    </h5>
+                    <h2 class="mb-0">{{ stats.total_students }}</h2>
+                    <small>com código rastreado</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-warning text-white">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <i class="fas fa-tasks"></i> Tarefas
+                    </h5>
+                    <h2 class="mb-0">{{ stats.total_tasks }}</h2>
+                    <small>com snapshots</small>
+                </div>
+            </div>
+        </div>
+    </div> -->
+
+    <!-- Filters -->
+    <div class="row mb-3">
+        <div class="col-md-4">
+            <input type="text" id="searchStudent" class="form-control" placeholder="🔍 Buscar por estudante...">
+        </div>
+        <div class="col-md-4">
+            <input type="text" id="searchTask" class="form-control" placeholder="🔍 Buscar por tarefa...">
+        </div>
+        <div class="col-md-4">
+            <select id="sortBy" class="form-control">
+                <option value="task">Ordenar por: Tarefa</option>
+                <option value="student">Ordenar por: Estudante</option>
+                <option value="lines">Ordenar por: Linhas de código</option>
+                <option value="patches">Ordenar por: Número de edições</option>
+                <option value="duration">Ordenar por: Duração</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- Data Table -->
+    <div class="card">
+        <div class="card-header bg-primary text-white">
+            <h5 class="mb-0">
+                <i class="fas fa-table"></i> 
+                Histórico de Evolução por Estudante e Tarefa
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover mb-0" id="evolutionTable">
+                    <thead class="thead-light">
+                        <tr class="text-white">
+                            <th class="text-white">Estudante</th>
+                            <th class="text-white">Tarefa</th>
+                            <th class="text-center text-white">
+                                <i class="fas fa-file-code"></i> Linhas Finais
+                            </th>
+                            <th class="text-center text-white">
+                                <i class="fas fa-edit"></i> Edições
+                            </th>
+                            <th class="text-center text-white">
+                                <i class="fas fa-clock"></i> Duração (min)
+                            </th>
+                            <th class="text-center text-white">
+                                <i class="fas fa-chart-line"></i> Média Linhas/Edição
+                            </th>
+                            <th class="text-center text-white">Período</th>
+                            <th class="text-center text-white">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in evolution_data %}
+                        <tr data-student="{{ row.student_name|lower }}" data-task="{{ row.task_id|lower }}">
+                            <td>
+                                <strong>{{ row.student_name }}</strong>
+                                <br>
+                                <small class="text-muted">{{ row.student_hash[:8] }}</small>
+                            </td>
+                            <td>
+                                <code>{{ row.task_id }}</code>
+                            </td>
+                            <td class="text-center">
+                                <span class="badge badge-pill" style="background-color: #0056b3; color: white;">
+                                    {{ row.final_lines }} linhas
+                                </span>
+                            </td>
+                            <td class="text-center">
+                                <span class="badge badge-pill" style="background-color: #28a745; color: white;">
+                                    {{ row.total_patches }}
+                                </span>
+                            </td>
+                            <td class="text-center">
+                                {% if row.duration_minutes > 0 %}
+                                    {{ "%.1f"|format(row.duration_minutes) }} min
+                                {% else %}
+                                    <span class="text-muted">-</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-center">
+                                {% if row.avg_lines_per_patch %}
+                                    {{ row.avg_lines_per_patch }}
+                                {% else %}
+                                    <span class="text-muted">-</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-center">
+                                <small>
+                                    {% if row.first_edit %}
+                                        {{ row.first_edit[:10] }}<br>
+                                        <i class="fas fa-arrow-down text-muted"></i><br>
+                                        {{ row.last_edit[:10] }}
+                                    {% else %}
+                                        {{ row.last_edit[:10] }}
+                                    {% endif %}
+                                </small>
+                            </td>
+                            <td class="text-center">
+                                <a href="/code-viewer?student={{ row.student_hash }}&task={{ row.task_id }}" 
+                                   class="btn btn-sm btn-primary"
+                                   title="Ver código completo">
+                                    <i class="fas fa-eye"></i> Ver
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card-footer text-muted">
+            <small>
+                <i class="fas fa-info-circle"></i> 
+                Total de registros: <strong id="totalRecords">{{ evolution_data|length }}</strong>
+                | Mostrando: <strong id="visibleRecords">{{ evolution_data|length }}</strong>
+            </small>
+        </div>
+    </div>
+
+    <!-- Help Section -->
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="alert alert-info">
+                <h5><i class="fas fa-question-circle"></i> Como usar esta página?</h5>
+                <ul class="mb-0">
+                    <li><strong>Edições:</strong> Número de patches/commits incrementais detectados</li>
+                    <li><strong>Duração:</strong> Tempo entre primeira e última edição registrada</li>
+                    <li><strong>Média Linhas/Edição:</strong> Crescimento médio do código por commit</li>
+                    <li><strong>Ver:</strong> Clique para visualizar o código completo e histórico de patches</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- JavaScript para filtros e ordenação -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const searchStudent = document.getElementById('searchStudent');
+    const searchTask = document.getElementById('searchTask');
+    const sortBy = document.getElementById('sortBy');
+    const table = document.getElementById('evolutionTable');
+    const tbody = table.querySelector('tbody');
+    const totalRecords = document.getElementById('totalRecords');
+    const visibleRecords = document.getElementById('visibleRecords');
+    
+    let allRows = Array.from(tbody.querySelectorAll('tr'));
+    
+    // Função de filtro
+    function filterTable() {
+        const studentQuery = searchStudent.value.toLowerCase();
+        const taskQuery = searchTask.value.toLowerCase();
+        let visibleCount = 0;
+        
+        allRows.forEach(row => {
+            const student = row.dataset.student;
+            const task = row.dataset.task;
+            
+            const matchStudent = student.includes(studentQuery);
+            const matchTask = task.includes(taskQuery);
+            
+            if (matchStudent && matchTask) {
+                row.style.display = '';
+                visibleCount++;
+            } else {
+                row.style.display = 'none';
+            }
+        });
+        
+        visibleRecords.textContent = visibleCount;
+    }
+    
+    // Função de ordenação
+    function sortTable() {
+        const sortType = sortBy.value;
+        
+        allRows.sort((a, b) => {
+            let valueA, valueB;
+            
+            switch(sortType) {
+                case 'student':
+                    valueA = a.dataset.student;
+                    valueB = b.dataset.student;
+                    return valueA.localeCompare(valueB);
+                
+                case 'task':
+                    valueA = a.dataset.task;
+                    valueB = b.dataset.task;
+                    return valueA.localeCompare(valueB);
+                
+                case 'lines':
+                    valueA = parseInt(a.cells[2].textContent.match(/\d+/)[0]);
+                    valueB = parseInt(b.cells[2].textContent.match(/\d+/)[0]);
+                    return valueB - valueA; // Decrescente
+                
+                case 'patches':
+                    valueA = parseInt(a.cells[3].textContent);
+                    valueB = parseInt(b.cells[3].textContent);
+                    return valueB - valueA; // Decrescente
+                
+                case 'duration':
+                    valueA = parseFloat(a.cells[4].textContent) || 0;
+                    valueB = parseFloat(b.cells[4].textContent) || 0;
+                    return valueB - valueA; // Decrescente
+                
+                default:
+                    return 0;
+            }
+        });
+        
+        // Reordenar DOM
+        allRows.forEach(row => tbody.appendChild(row));
+    }
+    
+    // Event listeners
+    searchStudent.addEventListener('input', filterTable);
+    searchTask.addEventListener('input', filterTable);
+    sortBy.addEventListener('change', sortTable);
+    
+    // Zebra striping após filtro
+    function updateZebraStripes() {
+        let visibleIndex = 0;
+        allRows.forEach(row => {
+            if (row.style.display !== 'none') {
+                row.classList.toggle('table-secondary', visibleIndex % 2 === 1);
+                visibleIndex++;
+            }
+        });
+    }
+    
+    // Observer para atualizar zebra quando visibilidade mudar
+    const observer = new MutationObserver(updateZebraStripes);
+    allRows.forEach(row => {
+        observer.observe(row, { attributes: true, attributeFilter: ['style'] });
+    });
+});
+</script>
+
+<style>
+.card {
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+    margin-bottom: 1.5rem;
+}
+
+.table th {
+    white-space: nowrap;
+}
+
+.badge-pill {
+    padding: 0.4em 0.8em;
+    font-size: 0.9rem;
+}
+
+.btn-sm {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.875rem;
+}
+
+.alert-info {
+    background-color: #d1ecf1;
+    border-color: #bee5eb;
+}
+
+/* Animação de hover nas linhas */
+tbody tr:hover {
+    background-color: #f8f9fa !important;
+    cursor: pointer;
+}
+
+/* Scrollbar para tabelas grandes */
+.table-responsive {
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+/* Sticky header */
+.table-responsive thead th {
+    position: sticky;
+    top: 0;
+    background-color: #343a40;
+    z-index: 10;
+}
+</style>
+{% endblock %}

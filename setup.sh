@@ -68,6 +68,38 @@ pip install -e . --quiet 2>/dev/null || echo -e "${YELLOW}[AVISO]${NC} Falha ao 
 
 echo -e "${GREEN}[OK]${NC} Dependências instaladas com sucesso!"
 
+# Verificação e instalação do Graphviz (binário) e do wrapper Python
+echo ""
+echo -e "${BLUE}[GRAPHVIZ]${NC} Verificando presença do Graphviz (comando 'dot')..."
+if command -v dot &> /dev/null; then
+    echo -e "${GREEN}[OK]${NC} Graphviz detectado: $(dot -V 2>&1 | head -n1)"
+else
+    echo -e "${YELLOW}[AVISO]${NC} Graphviz não encontrado. Tentando instalar via gerenciador de pacotes conhecido..."
+    if command -v apt-get &> /dev/null; then
+        echo "Instalando Graphviz via apt..."
+        sudo apt-get update && sudo apt-get install -y graphviz
+    elif command -v dnf &> /dev/null; then
+        echo "Instalando Graphviz via dnf..."
+        sudo dnf install -y graphviz
+    elif command -v yum &> /dev/null; then
+        echo "Instalando Graphviz via yum..."
+        sudo yum install -y graphviz
+    elif command -v brew &> /dev/null; then
+        echo "Instalando Graphviz via brew..."
+        brew install graphviz
+    else
+        echo -e "${RED}[ERRO]${NC} Nenhum gerenciador de pacotes conhecido encontrado. Por favor instale o Graphviz manualmente (ex: apt, dnf, yum, brew) e verifique se 'dot' está no PATH."
+    fi
+    if command -v dot &> /dev/null; then
+        echo -e "${GREEN}[OK]${NC} Graphviz instalado com sucesso."
+    else
+        echo -e "${YELLOW}[AVISO]${NC} Graphviz continua ausente. Instalação manual pode ser necessária."
+    fi
+fi
+
+echo -e "${BLUE}[GRAPHVIZ-PY]${NC} Instalando pacote Python 'graphviz'..."
+pip install graphviz --quiet || echo -e "${YELLOW}[AVISO]${NC} Falha ao instalar pacote Python 'graphviz'. Instale manualmente com 'pip install graphviz'."
+
 # Criar arquivo .env
 echo ""
 echo -e "${BLUE}[4/4]${NC} Configurando ambiente..."

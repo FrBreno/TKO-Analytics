@@ -2,7 +2,7 @@
 TKO-Analytics: Sistema de análise de telemetria educacional.
 
 Este pacote implementa pipeline ETL, métricas pedagógicas, Process Mining
-e dashboard para análise de logs do sistema TKO (Test Knowledge Online).
+e dashboard para análise de logs do sistema TKO.
 """
 
 __version__ = "0.1.0"

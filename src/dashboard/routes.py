@@ -4,15 +4,17 @@ Rotas do dashboard Flask.
 
 import os
 import csv
+import json
 import sqlite3
 import structlog
 import plotly.graph_objects as go
+import pm4py
 from pathlib import Path
 from datetime import datetime
-from flask import Flask, render_template, jsonify, abort, current_app, request, flash
+from flask import Flask, render_template, jsonify, abort, current_app, request, flash, redirect, url_for
 
-from src.parsers.log_parser import LogParser
-from src.etl.loader import SQLiteLoader
+from src.metrics.engine import MetricsEngine
+from src.etl.session_detector import SessionDetector
 
 logger = structlog.get_logger()
 
@@ -26,15 +28,43 @@ def get_db():
 
 def has_events_in_database() -> bool:
     """
-    Verifica se há eventos no banco de dados.
+    Verifica se há eventos no banco de dados (qualquer tabela).
     
     Returns:
         True se houver pelo menos um evento, False caso contrário
     """
     conn = get_db()
-    count = conn.execute('SELECT COUNT(*) as count FROM events').fetchone()['count']
+    # Verificar ambas as tabelas
+    model_count = conn.execute('SELECT COUNT(*) as count FROM model_events').fetchone()['count']
+    analysis_count = conn.execute('SELECT COUNT(*) as count FROM analysis_events').fetchone()['count']
     conn.close()
-    return count > 0
+    return (model_count + analysis_count) > 0
+
+
+def has_model_events() -> bool:
+    """
+    Verifica se há eventos MODEL no banco de dados.
+    
+    Returns:
+        True se houver pelo menos um evento MODEL, False caso contrário
+    """
+    conn = get_db()
+    model_count = conn.execute('SELECT COUNT(*) as count FROM model_events').fetchone()['count']
+    conn.close()
+    return model_count > 0
+
+
+def has_analysis_events() -> bool:
+    """
+    Verifica se há eventos ANALYSIS no banco de dados.
+    
+    Returns:
+        True se houver pelo menos um evento ANALYSIS, False caso contrário
+    """
+    conn = get_db()
+    analysis_count = conn.execute('SELECT COUNT(*) as count FROM analysis_events').fetchone()['count']
+    conn.close()
+    return analysis_count > 0
 
 
 def register_routes(app: Flask):
@@ -48,108 +78,47 @@ def register_routes(app: Flask):
             return render_template('setup_wizard.html')
         
         conn = get_db()
-        total_events = conn.execute('SELECT COUNT(*) as count FROM events').fetchone()['count']
         
-        # Estatísticas gerais
+        # Contar eventos de ambas as tabelas
+        model_count = conn.execute('SELECT COUNT(*) as count FROM model_events').fetchone()['count']
+        analysis_count = conn.execute('SELECT COUNT(*) as count FROM analysis_events').fetchone()['count']
+        total_events = model_count + analysis_count
+        
+        # Estatísticas gerais (combinando ambas as tabelas)
         stats = {
             'total_events': total_events,
-            'total_students': conn.execute('SELECT COUNT(DISTINCT student_hash) as count FROM events').fetchone()['count'],
-            'total_tasks': conn.execute('SELECT COUNT(DISTINCT task_id) as count FROM events').fetchone()['count'],
+            'total_students': conn.execute(
+                'SELECT COUNT(DISTINCT student_hash) FROM ('
+                '  SELECT student_hash FROM model_events '
+                '  UNION '
+                '  SELECT student_hash FROM analysis_events'
+                ')'
+            ).fetchone()[0],
+            'total_tasks': conn.execute(
+                'SELECT COUNT(DISTINCT task_id) FROM ('
+                '  SELECT task_id FROM model_events '
+                '  UNION '
+                '  SELECT task_id FROM analysis_events'
+                ')'
+            ).fetchone()[0],
             'total_sessions': conn.execute('SELECT COUNT(*) as count FROM sessions').fetchone()['count'],
         }
+        
+        # Estatísticas de Process Mining
+        stats['model_events'] = model_count
+        stats['analysis_events'] = analysis_count
+        stats['conformance_metrics'] = conn.execute("SELECT COUNT(*) as count FROM metrics WHERE metric_name='conformance_fitness'").fetchone()['count']
         
         conn.close()
         
         return render_template('index.html', stats=stats)
     
     
-    @app.route('/cohort')
-    def cohort_overview():
-        """Visão geral do cohort com heatmap."""
-        conn = get_db()
-        
-        # Busca métricas por estudante e tarefa
-        query = """
-        SELECT 
-            student_hash,
-            task_id,
-            metric_name,
-            metric_value
-        FROM metrics
-        WHERE metric_name IN ('time_active_seconds', 'final_success_rate', 'attempts_to_success')
-        ORDER BY student_hash, task_id
-        """
-        
-        rows = conn.execute(query).fetchall()
-        
-        # Organiza dados para heatmap
-        students = set()
-        tasks = set()
-        data = {}
-        
-        for row in rows:
-            students.add(row['student_hash'])
-            tasks.add(row['task_id'])
-            key = (row['student_hash'], row['task_id'], row['metric_name'])
-            data[key] = row['metric_value']
-        
-        students = sorted(students)
-        tasks = sorted(tasks)
-        
-        # Cria heatmap de success rate
-        heatmap_data = []
-        for student in students:
-            row_data = []
-            for task in tasks:
-                key = (student, task, 'final_success_rate')
-                value = data.get(key, 0)
-                row_data.append(value)
-            heatmap_data.append(row_data)
-        
-        # Gera visualização Plotly
-        fig = go.Figure(data=go.Heatmap(
-            z=heatmap_data,
-            x=tasks,
-            y=[s[:8] for s in students],  # Trunca hash para legibilidade
-            colorscale='RdYlGn',
-            text=heatmap_data,
-            texttemplate='%{text:.0f}%',
-            textfont={"size": 10},
-            colorbar=dict(title="Success Rate (%)")
-        ))
-        
-        fig.update_layout(
-            title='Cohort Success Rate Heatmap',
-            xaxis_title='Task ID',
-            yaxis_title='Student Hash',
-            height=max(400, len(students) * 30),
-        )
-        
-        heatmap_html = fig.to_html(full_html=False, include_plotlyjs='cdn')
-        
-        # Busca resumo de métricas
-        summary_query = """
-        SELECT 
-            student_hash,
-            COUNT(DISTINCT task_id) as tasks_attempted,
-            AVG(CASE WHEN metric_name = 'final_success_rate' THEN metric_value END) as avg_success_rate,
-            AVG(CASE WHEN metric_name = 'time_active_seconds' THEN metric_value END) as avg_time_active
-        FROM metrics
-        GROUP BY student_hash
-        ORDER BY avg_success_rate DESC
-        """
-        
-        students_summary = conn.execute(summary_query).fetchall()
-        
-        conn.close()
-        
-        return render_template(
-            'cohort.html',
-            heatmap=heatmap_html,
-            students=students_summary,
-            total_students=len(students),
-            total_tasks=len(tasks)
-        )
+    # DESABILITADO: Visão do Cohort (não será usado por enquanto)
+    # @app.route('/cohort')
+    # def cohort_overview():
+    #     """Visão geral do cohort com heatmap."""
+    #     ...
     
     
     @app.route('/student/<student_hash>')
@@ -157,31 +126,36 @@ def register_routes(app: Flask):
         """Detalhes de um estudante específico."""
         conn = get_db()
         
-        # Verifica se estudante existe
-        check = conn.execute(
-            'SELECT COUNT(*) as count FROM events WHERE student_hash = ?',
+        # Verifica se estudante existe em alguma das tabelas
+        model_count = conn.execute(
+            'SELECT COUNT(*) as count FROM model_events WHERE student_hash = ?',
             (student_hash,)
-        ).fetchone()
+        ).fetchone()['count']
         
-        if check['count'] == 0:
+        analysis_count = conn.execute(
+            'SELECT COUNT(*) as count FROM analysis_events WHERE student_hash = ?',
+            (student_hash,)
+        ).fetchone()['count']
+        
+        if model_count + analysis_count == 0:
             conn.close()
             abort(404, description="Estudante não encontrado")
         
-        # Busca eventos do estudante
+        # Busca eventos do estudante (combinando ambas as tabelas)
         events_query = """
         SELECT 
-            id,
-            timestamp,
-            task_id,
-            event_type,
-            activity_name,
-            metadata
-        FROM events
+            id, timestamp, task_id, event_type, activity as activity_name, metadata, 'model' as source
+        FROM model_events
+        WHERE student_hash = ?
+        UNION ALL
+        SELECT 
+            id, timestamp, task_id, event_type, activity as activity_name, metadata, 'analysis' as source
+        FROM analysis_events
         WHERE student_hash = ?
         ORDER BY timestamp ASC
         """
         
-        events = conn.execute(events_query, (student_hash,)).fetchall()
+        events = conn.execute(events_query, (student_hash, student_hash)).fetchall()
         
         # Busca métricas do estudante
         metrics_query = """
@@ -283,88 +257,11 @@ def register_routes(app: Flask):
         )
     
     
-    @app.route('/task/<task_id>')
-    def task_analytics(task_id: str):
-        """Análise agregada de uma tarefa."""
-        conn = get_db()
-        
-        # Verifica se tarefa existe
-        check = conn.execute(
-            'SELECT COUNT(*) as count FROM events WHERE task_id = ?',
-            (task_id,)
-        ).fetchone()
-        
-        if check['count'] == 0:
-            conn.close()
-            abort(404, description="Tarefa não encontrada")
-        
-        # Estatísticas da tarefa
-        stats_query = """
-        SELECT 
-            COUNT(DISTINCT student_hash) as total_students,
-            COUNT(*) as total_events,
-            AVG(CASE WHEN metric_name = 'final_success_rate' THEN metric_value END) as avg_success_rate,
-            AVG(CASE WHEN metric_name = 'time_active_seconds' THEN metric_value END) as avg_time_active,
-            AVG(CASE WHEN metric_name = 'attempts_to_success' THEN metric_value END) as avg_attempts
-        FROM (
-            SELECT DISTINCT student_hash FROM events WHERE task_id = ?
-        ) students
-        LEFT JOIN metrics ON metrics.student_hash = students.student_hash AND metrics.task_id = ?
-        """
-        
-        stats = conn.execute(stats_query, (task_id, task_id)).fetchone()
-        
-        # Distribuição de success rate
-        success_query = """
-        SELECT metric_value as success_rate
-        FROM metrics
-        WHERE task_id = ? AND metric_name = 'final_success_rate'
-        """
-        
-        success_rates = [row['success_rate'] for row in conn.execute(success_query, (task_id,)).fetchall()]
-        
-        # Cria histograma
-        fig = go.Figure(data=[go.Histogram(
-            x=success_rates,
-            nbinsx=10,
-            marker_color='steelblue',
-            opacity=0.7
-        )])
-        
-        fig.update_layout(
-            title=f'Success Rate Distribution - Task: {task_id}',
-            xaxis_title='Success Rate (%)',
-            yaxis_title='Number of Students',
-            height=400
-        )
-        
-        histogram_html = fig.to_html(full_html=False, include_plotlyjs='cdn')
-        
-        # Lista de estudantes na tarefa
-        students_query = """
-        SELECT 
-            e.student_hash,
-            COUNT(e.id) as events_count,
-            MAX(CASE WHEN m.metric_name = 'final_success_rate' THEN m.metric_value END) as success_rate,
-            MAX(CASE WHEN m.metric_name = 'time_active_seconds' THEN m.metric_value END) as time_active
-        FROM events e
-        LEFT JOIN metrics m ON e.student_hash = m.student_hash AND e.task_id = m.task_id
-        WHERE e.task_id = ?
-        GROUP BY e.student_hash
-        ORDER BY success_rate DESC
-        """
-        
-        students = conn.execute(students_query, (task_id,)).fetchall()
-        
-        conn.close()
-        
-        return render_template(
-            'task.html',
-            task_id=task_id,
-            stats=stats,
-            histogram=histogram_html,
-            students=students
-        )
+    # DESABILITADO: Análise de Tarefa (não será usado por enquanto)
+    # @app.route('/task/<task_id>')
+    # def task_analytics(task_id: str):
+    #     """Análise agregada de uma tarefa."""
+    #     ...
     
     
     @app.route('/api/metrics/<student_hash>')
@@ -397,20 +294,33 @@ def register_routes(app: Flask):
         if request.method == 'POST':
             root_dir = request.form.get('root_dir')
             import_mode = request.form.get('import_mode', 'incremental')
+            dataset_role = request.form.get('dataset_role', 'analysis')  # MODEL ou ANALYSIS
             
-            # Verificar se há dados no banco
-            has_data = has_events_in_database()
+            # Validar dataset_role
+            if dataset_role not in ('model', 'analysis'):
+                flash('Tipo de dataset inválido! Use "model" ou "analysis".', 'danger')
+                return render_template('import.html', 
+                                     has_model_data=has_model_events(),
+                                     has_analysis_data=has_analysis_events())
             
-            # Validar modo incremental apenas se houver dados
+            # Verificar se há dados do tipo correto no banco
+            has_data = has_model_events() if dataset_role == 'model' else has_analysis_events()
+            
+            # Validar modo incremental apenas se houver dados do tipo correto
             if import_mode == 'incremental' and not has_data:
-                flash('Modo incremental não disponível: banco de dados vazio. Use modo limpa para primeira importação.', 'warning')
-                return render_template('import.html', has_data=has_data)
+                dataset_label = "MODEL" if dataset_role == 'model' else "ANALYSIS"
+                flash(f'Modo incremental não disponível para {dataset_label}: nenhum dado deste tipo no banco. Use modo limpa para primeira importação.', 'warning')
+                return render_template('import.html', 
+                                     has_model_data=has_model_events(),
+                                     has_analysis_data=has_analysis_events())
             
             # Validar diretório
             root_path = Path(root_dir)
             if not root_path.exists():
                 flash('Diretório não encontrado!', 'danger')
-                return render_template('import.html', has_data=has_events_in_database())
+                return render_template('import.html', 
+                                     has_model_data=has_model_events(),
+                                     has_analysis_data=has_analysis_events())
             
             try:
                 # Importar módulos
@@ -425,16 +335,16 @@ def register_routes(app: Flask):
                 output_dir = Path("data/temp_import")
                 csv_path = output_dir / "events.csv"
                 
-                # Se modo limpo, limpar banco de dados
+                # Se modo limpo, limpar banco de dados ANALYSIS
                 if import_mode == 'clean':
-                    conn = get_db()
-                    conn.execute("DELETE FROM events")
-                    conn.execute("DELETE FROM metrics")
-                    conn.execute("DELETE FROM sessions")
-                    conn.commit()
-                    conn.close()
-                    logger.info("Database cleared (clean mode)")
-                    flash('Banco de dados limpo.', 'info')
+                    from src.etl.data_cleanup import clear_analysis_data
+                    result = clear_analysis_data(current_app.config['DB_PATH'])
+                    if result['success']:
+                        logger.info("Analysis data cleared (clean mode)", **result)
+                        flash(result['message'], 'info')
+                    else:
+                        logger.error("Failed to clear analysis data", error=result.get('error'))
+                        flash(f'Erro ao limpar dados: {result.get("error")}', 'warning')
                 
                 # Executar scan
                 logger.info("Starting TKO data scan", root_dir=str(root_path), mode=import_mode)
@@ -472,16 +382,18 @@ def register_routes(app: Flask):
                 # Carregar CSV no banco de dados SQLite usando Pydantic + SQLiteLoader
                 try:
                     logger.info("Loading CSV into database", csv=str(csv_path), db=current_app.config['DB_PATH'])
-                    # Se modo limpo, limpar banco antes
+                    # Se modo limpo, limpar banco antes (apenas dados do dataset_role atual)
                     if import_mode == 'clean':
-                        conn = get_db()
-                        conn.execute("DELETE FROM events")
-                        conn.commit()
-                        conn.close()
-                        logger.info("[] - Database cleared before",
-                               csv=str(csv_path), 
-                               db=current_app.config['DB_PATH'],
-                               mode=import_mode)
+                        from src.etl.data_cleanup import clear_model_data, clear_analysis_data
+                        if dataset_role == 'model':
+                            result = clear_model_data(current_app.config['DB_PATH'])
+                        else:
+                            result = clear_analysis_data(current_app.config['DB_PATH'])
+                        
+                        logger.info("Database cleared before import",
+                               dataset_role=dataset_role,
+                               mode=import_mode,
+                               result=result)
                     
                     # Agrupar eventos por student_id do CSV
                     events_by_student = {}
@@ -505,44 +417,74 @@ def register_routes(app: Flask):
                             logger.warning("Parse errors detected",
                                          error_count=len(parser.errors),
                                          sample_errors=[str(e) for e in parser.errors[:3]])
-                        pydantic_by_student = {}
-                        event_index = 0
                         
-                        for student_id, csv_rows in events_by_student.items():
-                            pydantic_by_student[student_id] = []
-                            for _ in csv_rows:
-                                if event_index < len(all_events):
-                                    pydantic_by_student[student_id].append(all_events[event_index])
-                                    event_index += 1
+                        # FIX: Reprocessar CSV para obter student_id de cada linha
+                        # e associar corretamente aos eventos Pydantic parseados
+                        pydantic_by_student = {}
+                        
+                        with open(csv_path, 'r', encoding='utf-8') as f:
+                            reader = csv.DictReader(f)
+                            for idx, (row, event) in enumerate(zip(reader, all_events)):
+                                student_id = row.get('student_id', 'unknown')
+                                if student_id not in pydantic_by_student:
+                                    pydantic_by_student[student_id] = []
+                                pydantic_by_student[student_id].append(event)
                         
                         loader = SQLiteLoader(current_app.config['DB_PATH'], batch_size=1000)
                         total_loaded = 0
+                        
+                        logger.info("SQLiteLoader initialized",
+                                   db_path=current_app.config['DB_PATH'],
+                                   students_to_load=len(pydantic_by_student))
 
                         for student_id, student_events in pydantic_by_student.items():
                             if student_events:
                                 try:
                                     # Gerar case_id único baseado em timestamp
                                     import time
-                                    case_id = f"case_{int(time.time())}"
+                                    case_id = f"case_{int(time.time())}_{student_id[:8]}"
+                                    
+                                    logger.info("Loading events for student",
+                                              student_hash=student_id[:8],
+                                              events_count=len(student_events),
+                                              case_id=case_id)
+                                    
                                     loaded = loader.load_events(
                                         events=student_events,
                                         student_id=student_id,
                                         case_id=case_id,
-                                        session_id=None
+                                        session_id=None,
+                                        dataset_role=dataset_role  # Passar dataset_role
                                     )
                                     total_loaded += loaded
                                     logger.info("Loaded events for student",
                                               student_hash=student_id[:8],
-                                              events=loaded)
+                                              events=loaded,
+                                              dataset_role=dataset_role)
                                 except Exception as e:
                                     logger.error("Failed to load events for student",
                                                student_hash=student_id[:8],
-                                               error=str(e))
+                                               error=str(e),
+                                               exc_info=True)
                                     continue
                         
                         logger.info("Events loaded into database", 
                                    total=total_loaded,
-                                   students=len(pydantic_by_student))
+                                   students=len(pydantic_by_student),
+                                   dataset_role=dataset_role)
+                        
+                        # Verificar persistência nas tabelas corretas
+                        conn_verify = get_db()
+                        cursor_verify = conn_verify.cursor()
+                        table_name = f"{dataset_role}_events"
+                        cursor_verify.execute(f"SELECT COUNT(*) FROM {table_name}")
+                        db_event_count = cursor_verify.fetchone()[0]
+                        conn_verify.close()
+                        
+                        logger.info("Database verification after load",
+                                   table=table_name,
+                                   total_in_table=db_event_count,
+                                   just_loaded=total_loaded)
                         
                         # Limpar arquivos temporários CSV após carregamento bem-sucedido
                         try:
@@ -552,7 +494,106 @@ def register_routes(app: Flask):
                         except Exception as e:
                             logger.warning("Failed to delete temporary files", error=str(e))
                         
-                        flash(f'Dados carregados no banco: {total_loaded} eventos de {len(pydantic_by_student)} estudante(s).', 'success')
+                        role_label = "MODEL (geração de processo)" if dataset_role == "model" else "ANALYSIS (análise comportamental)"
+                        flash(f'Dados carregados no banco: {total_loaded} eventos de {len(pydantic_by_student)} estudante(s). Dataset: {role_label}', 'success')
+                        
+                        # Se for ANALYSIS, processar code tracking (snapshots e patches)
+                        if dataset_role == 'analysis':
+                            try:
+                                logger.info("Loading code tracking data for ANALYSIS dataset")
+                                from src.tko_integration.parser import TrackingParser
+                                
+                                total_snapshots = 0
+                                total_tasks = 0
+                                
+                                # Reprocessar scan para acessar repositórios de estudantes
+                                for turma in scan.turmas:
+                                    for block in turma.blocks:
+                                        for student in block.students:
+                                            if not student.valid or not student.tko_dir:
+                                                continue
+                                            
+                                            track_dir = student.tko_dir / 'track'
+                                            if not track_dir.exists():
+                                                continue
+                                            
+                                            student_hash = transformer.pseudonymize_student_id(student.username)
+                                            
+                                            # Processar cada tarefa no track/
+                                            for task_dir in track_dir.iterdir():
+                                                if not task_dir.is_dir():
+                                                    continue
+                                                
+                                                task_key = task_dir.name
+                                                
+                                                # Buscar arquivo draft.*.json
+                                                draft_json = None
+                                                for f in task_dir.glob('draft.*.json'):
+                                                    draft_json = f
+                                                    break
+                                                
+                                                if not draft_json:
+                                                    continue
+                                                
+                                                # Parse patches history
+                                                patches = TrackingParser.parse_patches_history(draft_json, task_key)
+                                                
+                                                if not patches:
+                                                    continue
+                                                
+                                                # Gerar case_id compatível com eventos
+                                                case_id = f"case_{int(time.time())}_{student_hash[:8]}"
+                                                
+                                                # Carregar snapshots
+                                                try:
+                                                    loaded_snaps = loader.load_code_snapshots(
+                                                        snapshots=patches,
+                                                        student_id=student_hash,  # Já hasheado
+                                                        case_id=case_id,
+                                                        student_name=student.username
+                                                    )
+                                                    total_snapshots += loaded_snaps
+                                                    total_tasks += 1
+                                                    
+                                                    logger.info("Loaded snapshots for task",
+                                                              student=student.username[:12],
+                                                              task=task_key,
+                                                              snapshots=loaded_snaps)
+                                                except Exception as e:
+                                                    logger.error("Failed to load snapshots",
+                                                               student=student.username,
+                                                               task=task_key,
+                                                               error=str(e))
+                                
+                                if total_snapshots > 0:
+                                    logger.info("Code tracking load complete",
+                                              total_snapshots=total_snapshots,
+                                              tasks=total_tasks)
+                                    flash(f'✅ Code tracking carregado: {total_snapshots} snapshots/patches de {total_tasks} tarefa(s).', 'success')
+                                else:
+                                    logger.info("No code tracking data found")
+                                    
+                            except Exception as e:
+                                logger.error("Code tracking load failed", error=str(e), exc_info=True)
+                                flash(f'⚠️ Aviso: Falha ao carregar code tracking: {str(e)}', 'warning')
+                            
+                            # Processar métricas automaticamente
+                            try:
+                                logger.info("Auto-processing metrics for ANALYSIS dataset")
+                                from src.etl.engine import ETLEngine
+                                
+                                engine = ETLEngine(db_path=current_app.config['DB_PATH'])
+                                result = engine.process_events()
+                                
+                                logger.info("ETL processing complete",
+                                          students=result['students_processed'],
+                                          sessions=result['sessions_detected'],
+                                          metrics=result['metrics_calculated'])
+                                
+                                flash(f'✅ Métricas processadas automaticamente: {result["sessions_detected"]} sessões detectadas, {result["metrics_calculated"]} métricas calculadas.', 'success')
+                            except Exception as e:
+                                logger.error("Auto-processing failed", error=str(e), exc_info=True)
+                                flash(f'⚠️ Aviso: Falha ao processar métricas automaticamente: {str(e)}', 'warning')
                     else:
                         logger.warning("No events found in CSV")
                         flash('Aviso: Nenhum evento encontrado no CSV.', 'warning')
@@ -568,9 +609,11 @@ def register_routes(app: Flask):
                         pass
                 
                 mode_msg = 'incremental' if import_mode == 'incremental' else 'limpa'
-                flash(f'Importação {mode_msg} concluída! {total_events} eventos processados.', 'success')
+                role_label = "MODEL" if dataset_role == "model" else "ANALYSIS"
+                flash(f'Importação {mode_msg} de {role_label} concluída! {total_events} eventos processados.', 'success')
                 
-                return render_template('import.html', scan_result=scan)
+                # Redirecionar para página limpa (não mostrar scan_result)
+                return redirect(url_for('import_tko_data'))
                 
             except Exception as e:
                 logger.error("Import failed", error=str(e), exc_info=True)
@@ -581,11 +624,85 @@ def register_routes(app: Flask):
                         shutil.rmtree(output_dir)
                 except:
                     pass
-                return render_template('import.html', has_data=has_events_in_database())
+                return render_template('import.html', 
+                                     has_model_data=has_model_events(),
+                                     has_analysis_data=has_analysis_events())
         
         # Verificar se há dados no banco para modo GET
-        return render_template('import.html', has_data=has_events_in_database())
+        return render_template('import.html', 
+                             has_model_data=has_model_events(),
+                             has_analysis_data=has_analysis_events())
     
+    
+    @app.route('/clear_model_data', methods=['POST'])
+    def clear_model_data():
+        """Limpa apenas os dados MODEL do banco de dados."""
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Limpar apenas tabelas relacionadas a MODEL
+            cursor.execute("DELETE FROM model_events")
+            model_count = cursor.rowcount
+            
+            # Limpar process_models se existir
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='process_models'")
+            if cursor.fetchone():
+                cursor.execute("DELETE FROM process_models")
+            
+            conn.commit()
+            conn.close()
+            
+            flash(f'Dados MODEL limpos com sucesso! {model_count} eventos removidos. Modelo PM deletado.', 'success')
+            logger.info("MODEL data cleared successfully", events_removed=model_count)
+            
+        except Exception as e:
+            logger.error("Failed to clear MODEL data", error=str(e), exc_info=True)
+            flash(f'Erro ao limpar dados MODEL: {str(e)}', 'danger')
+        
+        return redirect(url_for('import_tko_data'))
+    
+    @app.route('/clear_analysis_data', methods=['POST'])
+    def clear_analysis_data():
+        """Limpa apenas os dados ANALYSIS do banco de dados."""
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Limpar apenas tabelas relacionadas a ANALYSIS
+            cursor.execute("DELETE FROM analysis_events")
+            events_count = cursor.rowcount
+            
+            # Limpar sessions, metrics e behavioral_patterns
+            cursor.execute("DELETE FROM sessions")
+            sessions_count = cursor.rowcount
+            
+            cursor.execute("DELETE FROM metrics")
+            metrics_count = cursor.rowcount
+            
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='behavioral_patterns'")
+            if cursor.fetchone():
+                cursor.execute("DELETE FROM behavioral_patterns")
+            
+            # Limpar code_snapshots
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='code_snapshots'")
+            if cursor.fetchone():
+                cursor.execute("DELETE FROM code_snapshots")
+            
+            conn.commit()
+            conn.close()
+            
+            flash(f'Dados ANALYSIS limpos com sucesso! {events_count} eventos, {sessions_count} sessões e {metrics_count} métricas removidas.', 'success')
+            logger.info("ANALYSIS data cleared successfully", 
+                       events_removed=events_count,
+                       sessions_removed=sessions_count,
+                       metrics_removed=metrics_count)
+            
+        except Exception as e:
+            logger.error("Failed to clear ANALYSIS data", error=str(e), exc_info=True)
+            flash(f'Erro ao limpar dados ANALYSIS: {str(e)}', 'danger')
+        
+        return redirect(url_for('import_tko_data'))
     
     @app.route('/clear_database', methods=['POST'])
     def clear_database():
@@ -707,3 +824,1822 @@ def register_routes(app: Flask):
         except Exception as e:
             logger.error("Browse directory failed", error=str(e), exc_info=True)
             return jsonify({'error': str(e)}), 500
+    
+    
+    @app.route('/api/process_etl', methods=['POST'])
+    def process_etl():
+        """
+        Processa ETL completo: detecta sessões e calcula métricas.
+        
+        Este endpoint:
+        1. Lê todos os eventos do banco de dados
+        2. Agrupa por estudante
+        3. Detecta sessões usando SessionDetector
+        4. Calcula métricas usando MetricsEngine
+        5. Popula tabelas sessions e metrics
+        
+        Returns:
+            JSON com estatísticas do processamento
+        """
+        try:
+            logger.info("ETL processing started")
+            
+            # Conectar ao banco
+            conn = get_db()
+            
+            # Verificar se há eventos ANALYSIS para processar
+            count = conn.execute('SELECT COUNT(*) as count FROM analysis_events').fetchone()['count']
+            if count == 0:
+                conn.close()
+                return jsonify({
+                    'success': False,
+                    'error': 'Nenhum evento ANALYSIS encontrado no banco de dados. Importe dados ANALYSIS primeiro.'
+                }), 400
+            
+            # Limpar tabelas sessions e metrics antes de reprocessar
+            conn.execute('DELETE FROM sessions')
+            conn.execute('DELETE FROM metrics')
+            conn.commit()
+            logger.info("Previous sessions and metrics cleared")
+            
+            # Buscar todos os eventos ANALYSIS agrupados por estudante
+            events_query = """
+                SELECT 
+                    student_hash,
+                    case_id,
+                    task_id,
+                    event_type,
+                    timestamp,
+                    activity,
+                    metadata
+                FROM analysis_events
+                ORDER BY student_hash, timestamp
+            """
+            
+            rows = conn.execute(events_query).fetchall()
+            
+            # Agrupar eventos por estudante
+            students_events = {}
+            students_case_ids = {}  # Mapeia (student, event_idx) -> case_id
+            for row in rows:
+                student_hash = row['student_hash']
+                if student_hash not in students_events:
+                    students_events[student_hash] = []
+                    students_case_ids[student_hash] = []
+                
+                # Parse metadata JSON
+                import json
+                metadata = json.loads(row['metadata']) if row['metadata'] else {}
+                
+                timestamp = datetime.fromisoformat(row['timestamp'])
+                
+                # Criar evento apropriado baseado no event_type
+                if row['event_type'] == 'ExecEvent':
+                    from src.models.events import ExecEvent
+                    event = ExecEvent(
+                        timestamp=timestamp,
+                        task_id=row['task_id'],
+                        mode=metadata.get('mode', 'FREE'),
+                        rate=metadata.get('rate'),
+                        size=metadata.get('size', 0),
+                        error=metadata.get('error', 'NONE')
+                    )
+                elif row['event_type'] == 'MoveEvent':
+                    from src.models.events import MoveEvent
+                    event = MoveEvent(
+                        timestamp=timestamp,
+                        task_id=row['task_id'],
+                        action=metadata.get('action', 'EDIT')
+                    )
+                elif row['event_type'] == 'SelfEvent':
+                    from src.models.events import SelfEvent
+                    event = SelfEvent(
+                        timestamp=timestamp,
+                        task_id=row['task_id'],
+                        rate=metadata.get('rate'),
+                        autonomy=metadata.get('autonomy', 'MEDIUM'),
+                        study_minutes=metadata.get('study_minutes', 0)
+                    )
+                else:
+                    continue
+                
+                students_events[student_hash].append(event)
+                students_case_ids[student_hash].append(row['case_id'])
+            
+            # Processar cada estudante
+            session_detector = SessionDetector(timeout_minutes=30)
+            metrics_engine = MetricsEngine(session_timeout_minutes=30)
+            
+            total_students = len(students_events)
+            total_sessions = 0
+            total_metrics = 0
+            
+            for idx, (student_hash, events) in enumerate(students_events.items(), 1):
+                case_ids = students_case_ids[student_hash]
+                
+                logger.info(
+                    "Processing student",
+                    student=student_hash[:8],
+                    progress=f"{idx}/{total_students}",
+                    events_count=len(events)
+                )
+                
+                # Detectar sessões e grupar por case_id primeiro
+                cases = {}
+                for event_idx, event in enumerate(events):
+                    case_id = case_ids[event_idx]
+                    if case_id not in cases:
+                        cases[case_id] = []
+                    cases[case_id].append(event)
+                
+                all_sessions = []
+                for case_id, case_events in cases.items():
+                    sessions = session_detector.detect_sessions(
+                        events=case_events,
+                        case_id=case_id,
+                        student_id=student_hash
+                    )
+                    all_sessions.extend(sessions)
+                
+                # Inserir sessões no banco
+                if all_sessions:
+                    for session in all_sessions:
+                        conn.execute(
+                            """
+                            INSERT INTO sessions (
+                                id, case_id, student_hash, task_id,
+                                start_timestamp, end_timestamp, duration_seconds,
+                                event_count, exec_count, move_count, self_count
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            session.to_db_row()
+                        )
+                    total_sessions += len(all_sessions)
+                
+                # Calcular métricas por tarefa
+                tasks = {}
+                for event_idx, event in enumerate(events):
+                    task_id = event.task_id
+                    if task_id not in tasks:
+                        tasks[task_id] = {'events': [], 'case_ids': []}
+                    tasks[task_id]['events'].append(event)
+                    tasks[task_id]['case_ids'].append(case_ids[event_idx])
+                
+                for task_id, task_data in tasks.items():
+                    task_events = task_data['events']
+                    # Filtrar sessões desta tarefa
+                    task_sessions = [s for s in all_sessions if s.task_id == task_id]
+                    case_id = task_data['case_ids'][0] if task_data['case_ids'] else "unknown"
+                    
+                    # Calcular métricas
+                    metrics = metrics_engine.compute_all_metrics(
+                        events=task_events,
+                        sessions=task_sessions,
+                        case_id=case_id,
+                        student_id=student_hash,
+                        task_id=task_id
+                    )
+                    
+                    # Inserir métricas no banco
+                    if metrics:
+                        for metric in metrics:
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO metrics (
+                                    id, case_id, student_hash, task_id,
+                                    metric_name, metric_value, metadata, computed_at
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                metric.to_db_row()
+                            )
+                        total_metrics += len(metrics)
+            
+            # Commit final
+            conn.commit()
+            conn.close()
+            
+            logger.info(
+                "ETL processing completed",
+                students=total_students,
+                sessions=total_sessions,
+                metrics=total_metrics
+            )
+            
+            return jsonify({
+                'success': True,
+                'students_processed': total_students,
+                'sessions_created': total_sessions,
+                'metrics_calculated': total_metrics
+            })
+            
+        except Exception as e:
+            logger.error("ETL processing failed", error=str(e), exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500
+    
+    
+    @app.route('/api/process_mining/available_tasks', methods=['GET'])
+    def get_available_tasks():
+        """
+        Retorna lista de tarefas disponíveis nos dados MODEL.
+        
+        GET /api/process_mining/available_tasks
+        
+        Returns:
+            JSON com lista de tarefas e estatísticas
+        """
+        from src.process_mining import ProcessModelGenerator
+        
+        try:
+            generator = ProcessModelGenerator(db_path=current_app.config['DB_PATH'])
+            tasks = generator.get_available_tasks()
+            
+            # Adiciona estatísticas globais
+            result = {
+                'success': True,
+                'tasks': tasks,
+                'global_stats': {
+                    'total_events': sum(t['event_count'] for t in tasks),
+                    'total_students': len(set([t['student_count'] for t in tasks])),
+                    'total_tasks': len(tasks)
+                }
+            }
+            
+            logger.info("[get_available_tasks] - Success", total_tasks=len(tasks))
+            return jsonify(result)
+        
+        except Exception as e:
+            logger.error("[get_available_tasks] - Error", error=str(e))
+            return jsonify({'success': False, 'error': str(e)}), 500
+    
+    @app.route('/api/process_mining/students_by_task/<task_id>', methods=['GET'])
+    def get_students_by_task(task_id: str):
+        """
+        Retorna lista de estudantes que têm eventos ANALYSIS para uma tarefa específica.
+        
+        GET /api/process_mining/students_by_task/<task_id>
+        
+        Returns:
+            JSON com lista de estudantes
+        """
+        try:
+            conn = get_db()
+            
+            # Buscar estudantes com eventos ANALYSIS para a tarefa
+            students = conn.execute("""
+                SELECT DISTINCT student_hash, student_name, COUNT(*) as event_count
+                FROM analysis_events
+                WHERE task_id = ?
+                GROUP BY student_hash, student_name
+                ORDER BY student_name
+            """, (task_id,)).fetchall()
+            
+            conn.close()
+            
+            result = {
+                'success': True,
+                'task_id': task_id,
+                'students': [
+                    {
+                        'student_hash': s['student_hash'],
+                        'student_name': s['student_name'] or 'Unknown',
+                        'event_count': s['event_count']
+                    } for s in students
+                ]
+            }
+            
+            logger.info("[get_students_by_task] - Success", 
+                       task_id=task_id,
+                       student_count=len(students))
+            
+            return jsonify(result)
+        
+        except Exception as e:
+            logger.error("[get_students_by_task] - Error", 
+                        task_id=task_id,
+                        error=str(e))
+            return jsonify({'success': False, 'error': str(e)}), 500
+    
+    @app.route('/api/process_mining/generate_model', methods=['POST'])
+    def generate_process_model():
+        """
+        Gera modelo de processo a partir dos eventos MODEL.
+        
+        POST /api/process_mining/generate_model
+        Body: {
+            "noise_threshold": 0.2,  (opcional, padrão: 0.2)
+            "task_id": "motoca"      (opcional, null = modelo global)
+        }
+        
+        Returns:
+            JSON com estatísticas do modelo e DFG
+        """
+        from src.process_mining import ProcessModelGenerator, ModelGenerationError
+        
+        try:
+            data = request.get_json() or {}
+            noise_threshold = data.get('noise_threshold', 0.2)
+            task_id = data.get('task_id', None)
+            
+            # Validação: task_id é obrigatório
+            if not task_id:
+                return jsonify({
+                    'success': False,
+                    'error': 'Parâmetro "task_id" é obrigatório. Selecione uma tarefa para gerar o modelo.'
+                }), 400
+            
+            logger.info("[generate_process_model] - Starting model generation",
+                       noise_threshold=noise_threshold,
+                       task_id=task_id)
+            
+            # Inicializa gerador
+            generator = ProcessModelGenerator(db_path=current_app.config['DB_PATH'])
+            
+            # Verifica estatísticas antes (com filtro opcional)
+            stats = generator.get_model_statistics(task_id=task_id)
+            
+            if stats['total_events'] == 0:
+                error_msg = f'Nenhum evento MODEL encontrado'
+                if task_id:
+                    error_msg += f' para a tarefa "{task_id}"'
+                error_msg += '. Importe dados com dataset_role="model" primeiro.'
+                return jsonify({
+                    'success': False,
+                    'error': error_msg
+                }), 400
+            
+            # Gera modelo (filtrado ou global)
+            net, initial_marking, final_marking = generator.generate_model(
+                noise_threshold=noise_threshold,
+                task_id=task_id
+            )
+            
+            # Gera DFG para estatísticas (com mesmo filtro)
+            dfg, start_activities, end_activities = generator.get_dfg(task_id=task_id)
+            
+            # Converter DFG para formato serializável em JSON
+            # DFG usa tuplas como chaves: {('A', 'B'): 5} -> {"A->B": 5}
+            dfg_serializable = {f"{k[0]}->{k[1]}": v for k, v in dfg.items()}
+            start_activities_serializable = {k: v for k, v in start_activities.items()}
+            end_activities_serializable = {k: v for k, v in end_activities.items()}
+            
+            # Salva modelo E DFG na sessão Flask para uso posterior
+            from flask import session
+            session['process_model'] = {
+                'generated_at': datetime.now().isoformat(),
+                'noise_threshold': noise_threshold,
+                'task_id': task_id,
+                'scope': task_id or 'global',
+                'stats': stats,
+                'dfg': {
+                    'activities': dfg_serializable,
+                    'start_activities': start_activities_serializable,
+                    'end_activities': end_activities_serializable
+                }
+            }
+            
+            logger.info("[generate_process_model] - Model generated successfully",
+                       places=len(net.places),
+                       transitions=len(net.transitions),
+                       scope=task_id or "global")
+            
+            return jsonify({
+                'success': True,
+                'model_info': {
+                    'places': len(net.places),
+                    'transitions': len(net.transitions),
+                    'arcs': len(net.arcs),
+                    'scope': task_id or 'global',
+                    'task_id': task_id
+                },
+                'statistics': stats,
+                'dfg_transitions': len(dfg)
+            })
+        
+        except ModelGenerationError as e:
+            logger.error("[generate_process_model] - Model generation failed",
+                        error=str(e))
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 400
+        
+        except Exception as e:
+            logger.error("[generate_process_model] - Unexpected error",
+                        error=str(e),
+                        exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': f"Erro inesperado: {str(e)}"
+            }), 500
+    
+    @app.route('/api/process_mining/conformance_analysis', methods=['POST'])
+    def conformance_analysis():
+        """
+        Executa análise de conformidade para estudante+tarefa específicos.
+        
+        POST /api/process_mining/conformance_analysis
+        Body: {
+            "task_id": "motoca",         (obrigatório)
+            "student_hash": "abc123..."  (obrigatório)
+        }
+        
+        Returns:
+            JSON com resultados do replay
+        """
+        from src.process_mining import (
+            ProcessModelGenerator,
+            ConformanceReplayer,
+            ReplayError
+        )
+        
+        try:
+            data = request.get_json() or {}
+            requested_task_id = data.get('task_id', None)
+            requested_student_hash = data.get('student_hash', None)
+            
+            # Validação de parâmetros obrigatórios
+            if not requested_task_id:
+                return jsonify({
+                    'success': False,
+                    'error': 'Parâmetro "task_id" é obrigatório para análise de conformidade.'
+                }), 400
+            
+            if not requested_student_hash:
+                return jsonify({
+                    'success': False,
+                    'error': 'Parâmetro "student_hash" é obrigatório para análise de conformidade.'
+                }), 400
+            
+            # Verifica se há modelo gerado na sessão
+            from flask import session
+            model_info = session.get('process_model', None)
+            
+            if not model_info:
+                return jsonify({
+                    'success': False,
+                    'error': 'Nenhum modelo gerado. Gere um modelo primeiro usando /api/process_mining/generate_model'
+                }), 400
+            
+            model_scope = model_info.get('task_id', None)  # None = global
+            
+            # Validação: se modelo é específico, análise deve ser da mesma tarefa
+            if model_scope and model_scope != requested_task_id:
+                return jsonify({
+                    'success': False,
+                    'error': f'Modelo gerado para tarefa "{model_scope}", '
+                            f'mas análise solicitada para "{requested_task_id}". '
+                            f'Gere um novo modelo ou ajuste o filtro.'
+                }), 400
+            
+            logger.info("[conformance_analysis] - Starting conformance analysis",
+                       task_id=requested_task_id,
+                       student_hash=requested_student_hash[:16] + "...",
+                       model_scope=model_scope or "global")
+            
+            # 1. Regenera modelo DIRETAMENTE do banco (evita bug de serialização)
+            generator = ProcessModelGenerator(db_path=current_app.config['DB_PATH'])
+            
+            # Gerar DFG primeiro
+            dfg, start_activities, end_activities = generator.get_dfg(task_id=model_scope)
+            
+            logger.info("[conformance_analysis] - DFG generated for reference model",
+                       dfg_edges=len(dfg),
+                       start_activities=list(start_activities.keys()),
+                       end_activities=list(end_activities.keys()))
+            
+            # Converter DFG para Petri Net
+            net, initial_marking, final_marking = pm4py.convert_to_petri_net(
+                dfg, start_activities, end_activities
+            )
+            
+            logger.info("[conformance_analysis] - Petri Net created",
+                       places=len(net.places),
+                       transitions=len(net.transitions),
+                       arcs=len(net.arcs))
+            
+            # 2. Inicializa replayer
+            replayer = ConformanceReplayer(
+                db_path=current_app.config['DB_PATH'],
+                net=net,
+                initial_marking=initial_marking,
+                final_marking=final_marking,
+                loop_threshold=5
+            )
+            
+            # 3. Executa replay APENAS para o estudante+tarefa solicitados
+            try:
+                student_result = replayer.replay_student_task(
+                    student_hash=requested_student_hash,
+                    task_id=requested_task_id
+                )
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': f'Nenhum evento ANALYSIS encontrado para estudante "{requested_student_hash[:16]}..." na tarefa "{requested_task_id}". Detalhes: {str(e)}'
+                }), 404
+            
+            # 4. Salva métrica no banco
+            try:
+                replayer.save_conformance_metrics(student_result)
+                saved_count = 1
+            except Exception as e:
+                logger.warning("[conformance_analysis] - Failed to save metrics",
+                              case_id=student_result.case_id,
+                              error=str(e))
+                saved_count = 0
+            
+            # 5. Armazena informações na sessão para visualização posterior
+            session['last_conformance_analysis'] = {
+                'student_hash': requested_student_hash,
+                'task_id': requested_task_id,
+                'fitness': student_result.fitness,
+                'analyzed_at': datetime.now().isoformat()
+            }
+            
+            logger.info("[conformance_analysis] - Conformance analysis completed",
+                       fitness=student_result.fitness,
+                       deviations=student_result.deviations_count)
+            
+            return jsonify({
+                'success': True,
+                'student_hash': requested_student_hash,
+                'task_id': requested_task_id,
+                'metrics_saved': saved_count,
+                'model_scope': model_scope or 'global',
+                'metrics': {
+                    'fitness': round(student_result.fitness, 4),
+                    'deviations_count': student_result.deviations_count,
+                    'excessive_loops_count': student_result.excessive_loops_count,
+                    'trace_length': student_result.trace_length
+                }
+            })
+        
+        except ReplayError as e:
+            logger.error("[conformance_analysis] - Replay error", error=str(e))
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 400
+        
+        except Exception as e:
+            logger.error("[conformance_analysis] - Unexpected error",
+                        error=str(e),
+                        exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': f"Erro inesperado: {str(e)}"
+            }), 500
+    
+    @app.route('/api/process_mining/visualize_global', methods=['GET'])
+    def visualize_global_process():
+        """
+        Gera visualização V1: Modelo de Processo já gerado (DFG).
+        
+        GET /api/process_mining/visualize_global
+        
+        Returns:
+            HTML com gráfico Plotly embarcado
+        """
+        from src.process_mining import ProcessVisualizer
+        from flask import session
+        
+        try:
+            # Recuperar DFG do modelo gerado da sessão
+            model_info = session.get('process_model', None)
+            
+            if not model_info or 'dfg' not in model_info:
+                return jsonify({
+                    'success': False,
+                    'error': 'Nenhum modelo gerado. Gere um modelo primeiro na aba "Gerar Modelo de Processo".'
+                }), 400
+            
+            dfg_data = model_info['dfg']
+            task_id = model_info.get('task_id', None)
+            
+            # Converter DFG de volta para formato PM4Py (strings -> tuplas)
+            # {"A->B": 5} -> {('A', 'B'): 5}
+            dfg_reconverted = {}
+            for key_str, value in dfg_data['activities'].items():
+                parts = key_str.split('->')
+                if len(parts) == 2:
+                    dfg_reconverted[(parts[0], parts[1])] = value
+            
+            scope_label = f"📋 {task_id}" if task_id else "🌍 Global"
+            logger.info("[visualize_global_process] - Displaying pre-generated model", 
+                       task_id=task_id or "ALL_TASKS",
+                       scope=scope_label)
+            
+            # Buscar traces MODEL agregados (por case_id) ANTES de gerar SVG
+            # para obter o número correto de traces
+            conn = sqlite3.connect(current_app.config['DB_PATH'])
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            if task_id:
+                cursor.execute("""
+                    SELECT 
+                        case_id,
+                        student_name,
+                        student_hash,
+                        COUNT(*) as event_count,
+                        MIN(timestamp) as first_timestamp,
+                        MAX(timestamp) as last_timestamp,
+                        (
+                            SELECT activity 
+                            FROM model_events me2 
+                            WHERE me2.case_id = me.case_id 
+                            ORDER BY timestamp ASC 
+                            LIMIT 1
+                        ) as first_event,
+                        (
+                            SELECT activity 
+                            FROM model_events me3 
+                            WHERE me3.case_id = me.case_id 
+                            ORDER BY timestamp DESC 
+                            LIMIT 1
+                        ) as last_event
+                    FROM model_events me
+                    WHERE task_id = ?
+                    GROUP BY case_id, student_name, student_hash
+                    ORDER BY first_timestamp ASC
+                """, (task_id,))
+            else:
+                cursor.execute("""
+                    SELECT 
+                        case_id,
+                        student_name,
+                        student_hash,
+                        task_id,
+                        COUNT(*) as event_count,
+                        MIN(timestamp) as first_timestamp,
+                        MAX(timestamp) as last_timestamp,
+                        (
+                            SELECT activity 
+                            FROM model_events me2 
+                            WHERE me2.case_id = me.case_id 
+                            ORDER BY timestamp ASC 
+                            LIMIT 1
+                        ) as first_event,
+                        (
+                            SELECT activity 
+                            FROM model_events me3 
+                            WHERE me3.case_id = me.case_id 
+                            ORDER BY timestamp DESC 
+                            LIMIT 1
+                        ) as last_event
+                    FROM model_events me
+                    GROUP BY case_id, student_name, student_hash, task_id
+                    ORDER BY first_timestamp ASC
+                """)
+            
+            traces = cursor.fetchall()
+            num_traces = len(traces)
+            conn.close()
+            
+            # Agora gerar SVG com o número correto de traces
+            visualizer = ProcessVisualizer()
+            title = f"V1: Modelo de Processo - {scope_label} (Dataset MODEL)"
+            
+            logger.info("[visualize_global_process] - Generating SVG with trace count",
+                       num_traces=num_traces)
+            
+            svg = visualizer.visualize_global_dfg(
+                dfg=dfg_reconverted,
+                start_activities=dfg_data['start_activities'],
+                end_activities=dfg_data['end_activities'],
+                title=title,
+                num_traces=num_traces
+            )
+            
+            # Criar HTML da listagem de traces agregados
+            from datetime import datetime
+            events_html = '<div class="events-list"><h3>Traces MODEL (Agregados por Estudante)</h3><table>'
+            events_html += '<thead><tr><th>#</th><th>Estudante</th><th>Eventos</th><th>Duração</th><th>Início</th><th>Fim</th><th>Primeiro Evento</th><th>Último Evento</th>'
+            if not task_id:
+                events_html += '<th>Tarefa</th>'
+            events_html += '</tr></thead><tbody>'
+            
+            for idx, trace in enumerate(traces, 1):
+                student_display = trace['student_name'] if trace['student_name'] else f"{trace['student_hash'][:12]}..."
+                
+                # Calcular duração
+                try:
+                    start = datetime.fromisoformat(trace['first_timestamp'].replace('Z', '+00:00'))
+                    end = datetime.fromisoformat(trace['last_timestamp'].replace('Z', '+00:00'))
+                    duration_seconds = (end - start).total_seconds()
+                    if duration_seconds < 60:
+                        duration_str = f"{duration_seconds:.0f}s"
+                    elif duration_seconds < 3600:
+                        duration_str = f"{duration_seconds/60:.1f}min"
+                    else:
+                        duration_str = f"{duration_seconds/3600:.1f}h"
+                except:
+                    duration_str = "N/A"
+                
+                first_ts = trace['first_timestamp'][:19] if trace['first_timestamp'] else ''
+                last_ts = trace['last_timestamp'][:19] if trace['last_timestamp'] else ''
+                
+                events_html += f'<tr><td>{idx}</td><td>{student_display}</td><td>{trace["event_count"]}</td>'
+                events_html += f'<td>{duration_str}</td><td>{first_ts}</td><td>{last_ts}</td>'
+                events_html += f'<td>{trace["first_event"]}</td><td>{trace["last_event"]}</td>'
+                if not task_id:
+                    events_html += f'<td>{trace["task_id"]}</td>'
+                events_html += '</tr>'
+            
+            events_html += '</tbody></table></div>'
+            
+            # Retorna HTML com SVG interativo
+            html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{title}</title>
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+    <style>
+        body {{
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+        }}
+        #svg-container {{
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        #svg-container svg {{
+            max-width: 100%;
+            height: auto;
+        }}
+        .controls {{
+            margin-bottom: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }}
+        button {{
+            padding: 8px 16px;
+            margin-right: 10px;
+            cursor: pointer;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }}
+        button:hover {{
+            background: #0056b3;
+        }}
+        .events-list {{
+            margin-top: 30px;
+            padding: 20px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }}
+        .events-list h3 {{
+            margin-top: 0;
+            color: #333;
+        }}
+        .events-list table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }}
+        .events-list th, .events-list td {{
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }}
+        .events-list th {{
+            background: #f8f9fa;
+            font-weight: bold;
+            color: #555;
+        }}
+        .events-list tr:hover {{
+            background: #f8f9fa;
+        }}
+        .events-list code {{
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+        }}
+        .legend-card {{
+            margin-bottom: 20px;
+            padding: 20px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        .legend-card h3 {{
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: #333;
+            font-size: 1.2rem;
+        }}
+        .legend-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }}
+        .legend-item {{
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            border-radius: 4px;
+            background: #f8f9fa;
+        }}
+        .legend-color {{
+            width: 30px;
+            height: 30px;
+            border-radius: 4px;
+            margin-right: 12px;
+            border: 1px solid #ddd;
+        }}
+        .legend-text {{
+            flex: 1;
+        }}
+        .legend-label {{
+            font-weight: bold;
+            font-size: 0.9rem;
+            color: #333;
+            margin-bottom: 2px;
+        }}
+        .legend-description {{
+            font-size: 0.75rem;
+            color: #666;
+        }}
+    </style>
+</head>
+<body>
+    <div class="legend-card">
+        <h3>🎨 Legenda de Cores - Frequência Média de Atividades</h3>
+        <div class="legend-grid">
+            <div class="legend-item">
+                <div class="legend-color" style="background: #F0F0F0;"></div>
+                <div class="legend-text">
+                    <div class="legend-label">Baixa (≤5)</div>
+                    <div class="legend-description">Pouco frequente</div>
+                </div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #D3D3D3;"></div>
+                <div class="legend-text">
+                    <div class="legend-label">Média (6-20)</div>
+                    <div class="legend-description">Uso moderado</div>
+                </div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #FF8C00;"></div>
+                <div class="legend-text">
+                    <div class="legend-label">Alta (21-50)</div>
+                    <div class="legend-description">Muito frequente</div>
+                </div>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #FF0000;"></div>
+                <div class="legend-text">
+                    <div class="legend-label">Excessiva (>50)</div>
+                    <div class="legend-description">Loop excessivo ⚠️</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="controls">
+        <button onclick="panZoomInstance.zoom(1.2)">Zoom In (+)</button>
+        <button onclick="panZoomInstance.zoom(0.8)">Zoom Out (-)</button>
+        <button onclick="panZoomInstance.reset()">Reset View</button>
+        <button onclick="panZoomInstance.center()">Center</button>
+    </div>
+    <div id="svg-container">{svg}</div>
+    {events_html}
+    <script>
+        var panZoomInstance = svgPanZoom('#svg-container svg', {{
+            zoomEnabled: true,
+            controlIconsEnabled: true,
+            fit: true,
+            center: true,
+            minZoom: 0.1,
+            maxZoom: 10
+        }});
+    </script>
+</body>
+</html>
+            """
+            
+            return html
+        
+        except Exception as e:
+            logger.error("[visualize_global_process] - Visualization failed",
+                        error=str(e),
+                        exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500
+    
+    @app.route('/api/process_mining/visualize_student/<student_hash>/<task_id>', methods=['GET'])
+    def visualize_student_trace(student_hash: str, task_id: str):
+        """
+        Gera visualização V2: Trajetória Individual de um estudante.
+        
+        GET /api/process_mining/visualize_student/<student_hash>/<task_id>
+        
+        Returns:
+            HTML com gráfico Plotly embarcado
+        """
+        from src.process_mining import (
+            ProcessModelGenerator,
+            ConformanceReplayer,
+            ProcessVisualizer
+        )
+        from flask import session
+        
+        try:
+            logger.info("[visualize_student_trace] - Generating V2",
+                       student_hash=student_hash[:8],
+                       task_id=task_id)
+            
+            # 1. SOLUÇÃO: Regenerar modelo ao invés de usar sessão (evita bug de serialização JSON)
+            model_info = session.get('process_model', None)
+            
+            if not model_info:
+                return jsonify({
+                    'success': False,
+                    'error': 'Nenhum modelo gerado. Gere um modelo primeiro na aba "Gerar Modelo de Processo".'
+                }), 400
+            
+            # Obter parâmetros do modelo da sessão
+            model_scope = model_info.get('task_id', None)
+            noise_threshold = model_info.get('noise_threshold', 0.2)
+            
+            logger.info("[visualize_student_trace] - Regenerating model from database",
+                       model_scope=model_scope or "global",
+                       noise_threshold=noise_threshold)
+            
+            # Regenerar modelo DIRETAMENTE do banco (não usar sessão corrompida)
+            generator = ProcessModelGenerator(db_path=current_app.config['DB_PATH'])
+            dfg, start_activities, end_activities = generator.get_dfg(task_id=model_scope)
+            
+            # Converter DFG para Petri Net (conversão limpa, sem passar por JSON)
+            net, initial_marking, final_marking = pm4py.convert_to_petri_net(
+                dfg, start_activities, end_activities
+            )
+            
+            logger.info("[visualize_student_trace] - Model regenerated successfully",
+                       dfg_edges=len(dfg),
+                       start_activities=len(start_activities),
+                       end_activities=len(end_activities),
+                       net_places=len(net.places),
+                       net_transitions=len(net.transitions))
+            
+            # 2. Busca trace do estudante
+            replayer = ConformanceReplayer(
+                db_path=current_app.config['DB_PATH'],
+                net=net,
+                initial_marking=initial_marking,
+                final_marking=final_marking
+            )
+            
+            events = replayer._fetch_analysis_events(student_hash, task_id)
+
+            logger.debug("REF - Events fetched", events=events)
+            
+            if not events:
+                return jsonify({
+                    'success': False,
+                    'error': f'Nenhum evento ANALYSIS encontrado para estudante {student_hash[:8]} na tarefa {task_id}'
+                }), 404
+            
+            case_id = events[0]['case_id']
+            trace = replayer._events_to_trace(events, case_id)
+
+            logger.info("[visualize_student_trace] - Student trace fetched", trace=trace)
+            
+            # 3. Cria visualização de trajetória
+            visualizer = ProcessVisualizer()
+            svg_trajectory = visualizer.visualize_student_trace(
+                dfg=dfg,
+                start_activities=start_activities,
+                end_activities=end_activities,
+                student_trace=trace,
+                student_hash=student_hash,
+                task_id=task_id
+            )
+            
+            # 4. Cria visualização do modelo de referência
+            svg_reference = visualizer.visualize_global_dfg(
+                dfg=dfg,
+                start_activities=start_activities,
+                end_activities=end_activities,
+                title=f"Modelo de Referência - {task_id}"
+            )
+            
+            # 5. Buscar métricas de conformidade do banco de dados
+            conn = sqlite3.connect(current_app.config['DB_PATH'])
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Buscar métricas do estudante
+            cursor.execute("""
+                SELECT metric_name, metric_value, metadata
+                FROM metrics
+                WHERE student_hash = ? AND task_id = ?
+                  AND metric_name IN (
+                      'conformance_fitness', 
+                      'conformance_deviations', 
+                      'conformance_excessive_loops', 
+                      'conformance_trace_length',
+                      'conformance_missing_tokens',
+                      'conformance_remaining_tokens',
+                      'conformance_consumed_tokens',
+                      'conformance_produced_tokens',
+                      'conformance_trace_is_fit',
+                      'conformance_activated_transitions',
+                      'conformance_reached_marking',
+                      'conformance_enabled_transitions_in_marking',
+                      'conformance_transitions_with_problems'
+                  )
+                ORDER BY computed_at DESC
+            """, (student_hash, task_id))
+            
+            metrics_rows = cursor.fetchall()
+            metrics_dict = {}
+            metadata_dict = {}
+            for row in metrics_rows:
+                metrics_dict[row['metric_name']] = row['metric_value']
+                if row['metadata']:
+                    metadata_dict[row['metric_name']] = json.loads(row['metadata'])
+            
+            # Extrair métricas básicas
+            fitness = float(metrics_dict.get('conformance_fitness', 0.0))
+            trace_length = int(metrics_dict.get('conformance_trace_length', len(events)))
+            missing_tokens = int(metrics_dict.get('conformance_missing_tokens', 0))
+            remaining_tokens = int(metrics_dict.get('conformance_remaining_tokens', 0))
+            consumed_tokens = int(metrics_dict.get('conformance_consumed_tokens', 0))
+            produced_tokens = int(metrics_dict.get('conformance_produced_tokens', 0))
+            
+            # Extrair métricas detalhadas (novas)
+            trace_is_fit = bool(metrics_dict.get('conformance_trace_is_fit', 0))
+            
+            # Para as listas, pegar do metadata, não do metric_value
+            activated_transitions = []
+            reached_marking = []
+            enabled_transitions_in_marking = []
+            transitions_with_problems = []
+            
+            if 'conformance_activated_transitions' in metadata_dict:
+                activated_transitions = metadata_dict['conformance_activated_transitions']
+            
+            if 'conformance_reached_marking' in metadata_dict:
+                reached_marking = metadata_dict['conformance_reached_marking']
+            
+            if 'conformance_enabled_transitions_in_marking' in metadata_dict:
+                enabled_transitions_in_marking = metadata_dict['conformance_enabled_transitions_in_marking']
+            
+            if 'conformance_transitions_with_problems' in metadata_dict:
+                transitions_with_problems = metadata_dict['conformance_transitions_with_problems']
+            
+            logger.info("[visualize_student_trace] - Metrics retrieved",
+                       fitness=fitness,
+                       missing_tokens=missing_tokens,
+                       remaining_tokens=remaining_tokens,
+                       consumed_tokens=consumed_tokens,
+                       produced_tokens=produced_tokens)
+            
+            # Criar card de métricas com TODAS as métricas de conformidade
+            metrics_card_html = f'''
+            <div class="metrics-card">
+                <h3><i class="fas fa-chart-line"></i> Métricas de Conformidade</h3>
+                <div class="metrics-grid">
+                    <div class="metric-item" title="Fitness indica o grau de aderência da trajetória do estudante ao modelo de processo esperado. Valores próximos de 1.0 (100%) indicam conformidade perfeita, enquanto valores baixos sugerem muitos desvios do comportamento esperado. É calculado como: 1 - (missing_tokens + remaining_tokens) / (consumed_tokens + missing_tokens + remaining_tokens).">
+                        <div class="metric-label">Fitness</div>
+                        <div class="metric-value">{fitness:.2f}</div>
+                        <div class="metric-badge {'badge-success' if fitness >= 0.9 else 'badge-warning' if fitness >= 0.7 else 'badge-danger'}">
+                            {'Excelente' if fitness >= 0.9 else 'Bom' if fitness >= 0.7 else 'Moderado' if fitness >= 0.5 else 'Baixo'}
+                        </div>
+                    </div>
+                    <div class="metric-item" title="Missing Tokens representam atividades esperadas pelo modelo que não foram executadas pelo estudante. Indica que o estudante pulou etapas obrigatórias ou necessárias. Valores altos sugerem que o estudante não seguiu o processo completo ou tomou atalhos inadequados.">
+                        <div class="metric-label">Missing Tokens</div>
+                        <div class="metric-value">{missing_tokens}</div>
+                        <div class="metric-badge {'badge-success' if missing_tokens == 0 else 'badge-danger'}">
+                            {'Nenhuma atividade pulada' if missing_tokens == 0 else f'{missing_tokens} atividade(s) pulada(s)'}
+                        </div>
+                    </div>
+                    <div class="metric-item" title="Remaining Tokens representam atividades que foram iniciadas mas não finalizadas corretamente. Indica que o processo não foi completado até o final esperado. Valores maiores que zero sugerem abandono da tarefa ou processo incompleto.">
+                        <div class="metric-label">Remaining Tokens</div>
+                        <div class="metric-value">{remaining_tokens}</div>
+                        <div class="metric-badge {'badge-success' if remaining_tokens == 0 else 'badge-warning'}">
+                            {'Processo completo' if remaining_tokens == 0 else f'{remaining_tokens} atividade(s) incompleta(s)'}
+                        </div>
+                    </div>
+                    <div class="metric-item" title="Consumed Tokens representam o número de transições (atividades + skips invisíveis) que foram executadas durante o replay no modelo de Petri. ATENÇÃO: Este valor pode ser maior que o número de eventos reais, pois inclui transições skip (τ) invisíveis adicionadas pelo algoritmo de descoberta do modelo para permitir flexibilidade nos caminhos. Use o Fitness como métrica principal de conformidade.">
+                        <div class="metric-label">Consumed Tokens</div>
+                        <div class="metric-value">{consumed_tokens}</div>
+                        <div class="metric-badge badge-info">
+                            {consumed_tokens} transição(ões) ativada(s)*
+                        </div>
+                    </div>
+                    <div class="metric-item" title="Produced Tokens representam o número de transições que geraram tokens durante o replay. Normalmente é igual aos Consumed Tokens. ATENÇÃO: Este valor inclui transições skip (τ) invisíveis do modelo, então pode ser maior que o número de eventos reais do aluno. Use o Fitness como métrica principal.">
+                        <div class="metric-label">Produced Tokens</div>
+                        <div class="metric-value">{produced_tokens}</div>
+                        <div class="metric-badge badge-info">
+                            {produced_tokens} transição(ões) produzida(s)*
+                        </div>
+                    </div>
+                    <div class="metric-item" title="Eventos no Trace representa o número total de atividades registradas durante a execução da tarefa pelo estudante. Inclui todas as ações como navegação, execução de testes e autoavaliação. Um número muito alto comparado à média pode indicar dificuldades ou abordagem ineficiente.">
+                        <div class="metric-label">Eventos no Trace</div>
+                        <div class="metric-value">{trace_length}</div>
+                        <div class="metric-badge badge-info">
+                            {trace_length} evento(s) registrado(s)
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top: 15px; padding: 12px; background: rgba(255,255,255,0.2); border-radius: 4px; font-size: 0.85rem; line-height: 1.5;">
+                    <strong>ℹ️ Nota sobre Consumed/Produced Tokens:</strong><br>
+                    Os valores de <em>Consumed</em> e <em>Produced Tokens</em> podem ser maiores que o número de eventos reais ({trace_length}), 
+                    pois incluem transições skip (τ) invisíveis adicionadas pelo algoritmo Inductive Miner para permitir flexibilidade nos caminhos do modelo.
+                </div>
+            </div>
+            '''
+            
+            # Criar card de informações detalhadas do replay
+            activated_trans_list = '<ul>' + ''.join([f'<li>{t}</li>' for t in activated_transitions[:10]]) + '</ul>'
+            if len(activated_transitions) > 10:
+                activated_trans_list += f'<p style="font-style: italic; font-size: 0.9rem;">... e mais {len(activated_transitions) - 10} transições</p>'
+            
+            reached_marking_list = '<ul>' + ''.join([f'<li>{m}</li>' for m in reached_marking]) + '</ul>' if reached_marking else '<p>Nenhuma marcação alcançada</p>'
+            enabled_trans_list = '<ul>' + ''.join([f'<li>{t}</li>' for t in enabled_transitions_in_marking]) + '</ul>' if enabled_transitions_in_marking else '<p>Nenhuma transição habilitada</p>'
+            problems_list = '<ul>' + ''.join([f'<li style="color: #dc3545; font-weight: bold;">{t}</li>' for t in transitions_with_problems]) + '</ul>' if transitions_with_problems else '<p style="color: #28a745;">Nenhuma transição problemática detectada</p>'
+            
+            fit_status_html = '<span style="color: #28a745; font-weight: bold;">✓ SIM</span>' if trace_is_fit else '<span style="color: #dc3545; font-weight: bold;">✗ NÃO</span>'
+            
+            detailed_replay_card = f'''
+            <div class="detailed-replay-card">
+                <h3><i class="fas fa-microscope"></i> Informações Detalhadas do Replay (PM4Py)</h3>
+                <p style="font-size: 0.95rem; opacity: 0.9; margin-bottom: 20px;">
+                    Esta seção apresenta informações técnicas extraídas diretamente do algoritmo de Token-Based Replay do PM4Py.
+                    Essas métricas são úteis para análise profunda do comportamento do estudante e diagnóstico de problemas específicos.
+                </p>
+                
+                <div class="detailed-grid">
+                    <div class="detailed-item">
+                        <h4><i class="fas fa-check-circle"></i> Trace is Fit (Perfeitamente Ajustado)</h4>
+                        <div class="detailed-value">{fit_status_html}</div>
+                        <p class="detailed-description">
+                            Indica se o trace é considerado perfeitamente ajustado ao modelo (fitness = 1.0).
+                            <strong>False</strong> significa que houve desvios, mesmo que pequenos.
+                        </p>
+                    </div>
+                    
+                    <div class="detailed-item">
+                        <h4><i class="fas fa-route"></i> Transições Ativadas</h4>
+                        <div class="detailed-value">{len(activated_transitions)} transição(ões)</div>
+                        <p class="detailed-description">
+                            Lista de transições disparadas durante o replay, <strong>na ordem de execução</strong>.
+                            Inclui transições visíveis (atividades reais) <strong>e invisíveis</strong> (skip/τ).
+                        </p>
+                        <div class="detailed-list">
+                            {activated_trans_list}
+                        </div>
+                    </div>
+                    
+                    <div class="detailed-item">
+                        <h4><i class="fas fa-map-marker-alt"></i> Marcação Alcançada (Reached Marking)</h4>
+                        <div class="detailed-value">{len(reached_marking)} place(s) com tokens</div>
+                        <p class="detailed-description">
+                            Distribuição de tokens nos <em>places</em> ao final do replay.
+                            Idealmente, deveria haver tokens apenas no(s) place(s) final(is).
+                            Tokens em places intermediários indicam processo incompleto.
+                        </p>
+                        <div class="detailed-list">
+                            {reached_marking_list}
+                        </div>
+                    </div>
+                    
+                    <div class="detailed-item">
+                        <h4><i class="fas fa-unlock"></i> Transições Habilitadas na Marcação Final</h4>
+                        <div class="detailed-value">{len(enabled_transitions_in_marking)} transição(ões) habilitada(s)</div>
+                        <p class="detailed-description">
+                            Transições que poderiam ser executadas na marcação final alcançada.
+                            Se há transições habilitadas, significa que o modelo esperava que o estudante continuasse
+                            (ex.: fazer autoavaliação, mover arquivos, etc.) mas o trace terminou.
+                        </p>
+                        <div class="detailed-list">
+                            {enabled_trans_list}
+                        </div>
+                    </div>
+                    
+                    <div class="detailed-item alert-box">
+                        <h4><i class="fas fa-exclamation-triangle"></i> Transições com Problemas</h4>
+                        <div class="detailed-value">{len(transitions_with_problems)} problema(s) detectado(s)</div>
+                        <p class="detailed-description">
+                            Transições identificadas como problemáticas durante o replay.
+                            <strong>Possíveis causas:</strong>
+                            <ul style="font-size: 0.9rem; margin-top: 8px;">
+                                <li>Disparou quando não deveria</li>
+                                <li>Disparou muitas vezes (loop excessivo)</li>
+                                <li>Consumiu/produziu tokens de forma inconsistente</li>
+                            </ul>
+                        </p>
+                        <div class="detailed-list">
+                            {problems_list}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="technical-note">
+                    <strong>📘 Nota Técnica:</strong><br>
+                    Transições <strong>invisíveis (skip/τ)</strong> são adicionadas pelo algoritmo Inductive Miner para permitir
+                    flexibilidade nos caminhos do modelo. Elas não correspondem a eventos reais do estudante, mas são necessárias
+                    para que o modelo possa representar diferentes variantes do processo. Por isso, os valores de
+                    <em>Consumed/Produced Tokens</em> e <em>Transições Ativadas</em> podem ser maiores que o número de eventos no trace.
+                </div>
+            </div>
+            '''
+            
+            # 6. Criar listagens de eventos lado a lado
+            # Eventos ANALYSIS (trajetória do estudante)
+            analysis_events_html = '<div class="events-column"><h4>Eventos da Trajetória (ANALYSIS)</h4><table>'
+            analysis_events_html += '<thead><tr><th>#</th><th>Timestamp</th><th>Atividade</th><th>Tipo</th><th>Estudante</th></tr></thead><tbody>'
+            
+            for idx, event in enumerate(events, 1):
+                ts = event['timestamp'][:19] if event['timestamp'] else ''
+                student_display = event.get('student_name') or f"{event.get('student_hash', 'N/A')[:12]}..."
+                analysis_events_html += f'<tr><td>{idx}</td><td>{ts}</td><td>{event["activity"]}</td><td>{event["event_type"]}</td><td>{student_display}</td></tr>'
+            
+            analysis_events_html += '</tbody></table></div>'
+            
+            conn.close()
+            
+            # Retorna HTML com SVG interativo
+            title = f"V2: Trajetória Individual - Estudante {student_hash[:8]} - Tarefa {task_id}"
+            html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>{title}</title>
+    <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.1/dist/svg-pan-zoom.min.js"></script>
+    <style>
+        body {{
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+        }}
+        #svg-container {{
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+        #svg-container svg {{
+            max-width: 100%;
+            height: auto;
+        }}
+        .controls {{
+            margin-bottom: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }}
+        button {{
+            padding: 8px 16px;
+            margin-right: 10px;
+            cursor: pointer;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }}
+        button:hover {{
+            background: #0056b3;
+        }}
+        .info {{
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #e3f2fd;
+            border-radius: 4px;
+            border-left: 4px solid #2196F3;
+        }}
+        .model-section {{
+            margin-bottom: 30px;
+            padding: 20px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }}
+        .model-section h3 {{
+            margin-top: 0;
+            color: #333;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }}
+        #svg-container-trajectory, #svg-container-reference {{
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-top: 15px;
+        }}
+        #svg-container-trajectory svg, #svg-container-reference svg {{
+            max-width: 100%;
+            height: auto;
+        }}
+        .metrics-card {{
+            margin-bottom: 30px;
+            padding: 25px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            color: white;
+        }}
+        .metrics-card h3 {{
+            margin-top: 0;
+            margin-bottom: 20px;
+            color: white;
+            font-size: 1.5rem;
+            border-bottom: 2px solid rgba(255,255,255,0.3);
+            padding-bottom: 10px;
+        }}
+        .metrics-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }}
+        .metric-item {{
+            background: rgba(255,255,255,0.15);
+            padding: 20px;
+            border-radius: 6px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+            cursor: help;
+            transition: all 0.3s ease;
+        }}
+        .metric-item:hover {{
+            background: rgba(255,255,255,0.25);
+            transform: translateY(-5px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.2);
+        }}
+        .metric-label {{
+            font-size: 0.9rem;
+            opacity: 0.9;
+            margin-bottom: 10px;
+            font-weight: 500;
+        }}
+        .metric-value {{
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin: 10px 0;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }}
+        .metric-badge {{
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-top: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        .badge-success {{
+            background: rgba(40, 167, 69, 0.9);
+            color: white;
+        }}
+        .badge-warning {{
+            background: rgba(255, 193, 7, 0.9);
+            color: #333;
+        }}
+        .badge-danger {{
+            background: rgba(220, 53, 69, 0.9);
+            color: white;
+        }}
+        .badge-info {{
+            background: rgba(23, 162, 184, 0.9);
+            color: white;
+        }}
+        .metric-description {{
+            font-size: 0.8rem;
+            opacity: 0.8;
+            margin-top: 8px;
+        }}
+        .detailed-replay-card {{
+            margin-bottom: 30px;
+            padding: 25px;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            color: white;
+        }}
+        .detailed-replay-card h3 {{
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: white;
+            font-size: 1.5rem;
+            border-bottom: 2px solid rgba(255,255,255,0.3);
+            padding-bottom: 10px;
+        }}
+        .detailed-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }}
+        .detailed-item {{
+            background: rgba(255,255,255,0.15);
+            padding: 20px;
+            border-radius: 6px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }}
+        .detailed-item h4 {{
+            margin-top: 0;
+            margin-bottom: 12px;
+            font-size: 1.1rem;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .detailed-value {{
+            font-size: 1.8rem;
+            font-weight: bold;
+            margin: 12px 0;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.2);
+        }}
+        .detailed-description {{
+            font-size: 0.9rem;
+            opacity: 0.95;
+            line-height: 1.5;
+            margin-bottom: 12px;
+        }}
+        .detailed-list {{
+            max-height: 200px;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.1);
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }}
+        .detailed-list ul {{
+            margin: 0;
+            padding-left: 20px;
+        }}
+        .detailed-list li {{
+            margin: 4px 0;
+        }}
+        .alert-box {{
+            background: rgba(220, 53, 69, 0.2);
+            border: 2px solid rgba(220, 53, 69, 0.5);
+        }}
+        .technical-note {{
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 4px;
+            border-left: 4px solid rgba(255,255,255,0.5);
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }}
+        .events-container {{
+            margin-top: 30px;
+        }}
+        .events-column {{
+            padding: 20px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }}
+        .events-column h4 {{
+            margin-top: 0;
+            color: #555;
+            border-bottom: 2px solid #28a745;
+            padding-bottom: 8px;
+        }}
+        .events-column table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }}
+        .events-column th, .events-column td {{
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }}
+        .events-column th {{
+            background: #f8f9fa;
+            font-weight: bold;
+            color: #555;
+        }}
+        .events-column tr:hover {{
+            background: #f8f9fa;
+        }}
+    </style>
+</head>
+<body>
+    <div class="info">
+        <strong>{title}</strong><br>
+        Transições em <span style="color: #0000FF; font-weight: bold;">azul</span> indicam o caminho percorrido pelo estudante.
+    </div>
+    
+    <div class="model-section">
+        <h3>Trajetória do Estudante</h3>
+        <div class="controls">
+            <button onclick="panZoomInstanceTraj.zoom(1.2)">Zoom In (+)</button>
+            <button onclick="panZoomInstanceTraj.zoom(0.8)">Zoom Out (-)</button>
+            <button onclick="panZoomInstanceTraj.reset()">Reset View</button>
+            <button onclick="panZoomInstanceTraj.center()">Center</button>
+        </div>
+        <div id="svg-container-trajectory">{svg_trajectory}</div>
+    </div>
+    
+    <div class="model-section">
+        <h3>Modelo de Referência</h3>
+        <div class="controls">
+            <button onclick="panZoomInstanceRef.zoom(1.2)">Zoom In (+)</button>
+            <button onclick="panZoomInstanceRef.zoom(0.8)">Zoom Out (-)</button>
+            <button onclick="panZoomInstanceRef.reset()">Reset View</button>
+            <button onclick="panZoomInstanceRef.center()">Center</button>
+        </div>
+        <div id="svg-container-reference">{svg_reference}</div>
+    </div>
+    
+    {metrics_card_html}
+    
+    {detailed_replay_card}
+    
+    <div class="events-container">
+        {analysis_events_html}
+    </div>
+    <script>
+        var panZoomInstanceTraj = svgPanZoom('#svg-container-trajectory svg', {{
+            zoomEnabled: true,
+            controlIconsEnabled: true,
+            fit: true,
+            center: true,
+            minZoom: 0.1,
+            maxZoom: 10
+        }});
+        
+        var panZoomInstanceRef = svgPanZoom('#svg-container-reference svg', {{
+            zoomEnabled: true,
+            controlIconsEnabled: true,
+            fit: true,
+            center: true,
+            minZoom: 0.1,
+            maxZoom: 10
+        }});
+    </script>
+</body>
+</html>
+            """
+            
+            return html
+        
+        except Exception as e:
+            logger.error("[visualize_student_trace] - Visualization failed",
+                        error=str(e),
+                        exc_info=True)
+            return jsonify({
+                'success': False,
+                'error': str(e)
+            }), 500
+    
+    @app.route('/code-evolution')
+    def code_evolution_page():
+        """Página de visualização de evolução de código dos estudantes."""
+        conn = get_db()
+        
+        # Verificar se há snapshots no banco
+        snapshot_count = conn.execute('SELECT COUNT(*) as count FROM code_snapshots').fetchone()['count']
+        
+        if snapshot_count == 0:
+            conn.close()
+            flash('Nenhum snapshot de código encontrado. Importe dados ANALYSIS primeiro.', 'warning')
+            return redirect(url_for('index'))
+        
+        # Buscar estatísticas agregadas por tarefa e estudante
+        query = """
+        WITH task_stats AS (
+            SELECT 
+                cs.case_id,
+                cs.student_hash,
+                cs.student_name,
+                cs.task_id,
+                cs.line_count as final_lines,
+                cs.timestamp as last_edit,
+                COUNT(DISTINCT cp.id) as total_patches,
+                MIN(cp.timestamp) as first_edit,
+                ROUND(
+                    (julianday(MAX(cp.timestamp)) - julianday(MIN(cp.timestamp))) * 24 * 60,
+                    1
+                ) as duration_minutes
+            FROM code_snapshots cs
+            LEFT JOIN code_patches cp ON cp.case_id = cs.case_id AND cp.task_id = cs.task_id
+            GROUP BY cs.case_id, cs.student_hash, cs.student_name, cs.task_id
+        )
+        SELECT 
+            student_name,
+            student_hash,
+            task_id,
+            final_lines,
+            total_patches,
+            COALESCE(duration_minutes, 0) as duration_minutes,
+            ROUND(final_lines * 1.0 / NULLIF(total_patches, 0), 2) as avg_lines_per_patch,
+            first_edit,
+            last_edit
+        FROM task_stats
+        ORDER BY task_id, student_name
+        """
+        
+        evolution_data = conn.execute(query).fetchall()
+        
+        # Contar totais
+        total_snapshots = snapshot_count
+        total_patches = conn.execute('SELECT COUNT(*) as count FROM code_patches').fetchone()['count']
+        total_students = conn.execute(
+            'SELECT COUNT(DISTINCT student_hash) as count FROM code_snapshots'
+        ).fetchone()['count']
+        total_tasks = conn.execute(
+            'SELECT COUNT(DISTINCT task_id) as count FROM code_snapshots'
+        ).fetchone()['count']
+        
+        conn.close()
+        
+        return render_template(
+            'code_evolution.html',
+            evolution_data=evolution_data,
+            stats={
+                'total_snapshots': total_snapshots,
+                'total_patches': total_patches,
+                'total_students': total_students,
+                'total_tasks': total_tasks
+            }
+        )
+    
+    @app.route('/code-viewer')
+    def code_viewer_page():
+        """Página de visualização de código individual com histórico de patches."""
+        student_hash = request.args.get('student')
+        task_id = request.args.get('task')
+        
+        if not student_hash or not task_id:
+            flash('Parâmetros inválidos: student e task são obrigatórios', 'error')
+            return redirect(url_for('code_evolution_page'))
+        
+        conn = get_db()
+        
+        # Buscar informações do estudante
+        student_info = conn.execute("""
+            SELECT DISTINCT student_name, case_id
+            FROM code_snapshots
+            WHERE student_hash = ? AND task_id = ?
+            LIMIT 1
+        """, (student_hash, task_id)).fetchone()
+        
+        if not student_info:
+            conn.close()
+            flash(f'Nenhum snapshot encontrado para {student_hash} na tarefa {task_id}', 'error')
+            return redirect(url_for('code_evolution_page'))
+        
+        # Buscar snapshot final (código completo)
+        snapshot = conn.execute("""
+            SELECT id, timestamp, line_count, metadata, file_path
+            FROM code_snapshots
+            WHERE student_hash = ? AND task_id = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (student_hash, task_id)).fetchone()
+        
+        # Buscar histórico de patches com conteúdo
+        patches = conn.execute("""
+            SELECT 
+                id,
+                timestamp,
+                line_count_delta,
+                patch_text,
+                previous_snapshot_id,
+                metadata
+            FROM code_patches
+            WHERE case_id = ? AND task_id = ?
+            ORDER BY timestamp ASC
+        """, (student_info['case_id'], task_id)).fetchall()
+        
+        conn.close()
+        
+        # Extrair código do metadata do snapshot
+        snapshot_metadata = json.loads(snapshot['metadata'])
+        final_code = snapshot_metadata.get('code', '')
+        
+        # Preparar dados dos patches para o template com métricas temporais
+        from datetime import datetime
+        patches_data = []
+        timeline_data = []  # Para gráfico Plotly
+        cumulative_lines = 0
+        
+        for idx, patch in enumerate(patches, 1):
+            patch_meta = json.loads(patch['metadata']) if patch['metadata'] else {}
+            timestamp_obj = datetime.fromisoformat(patch['timestamp'])
+            
+            # Calcular linha acumulativa
+            cumulative_lines = patch['line_count_delta']
+            
+            # Calcular tempo desde patch anterior
+            time_since_previous = None
+            if idx > 1:
+                prev_timestamp = datetime.fromisoformat(patches[idx-2]['timestamp'])
+                time_delta = (timestamp_obj - prev_timestamp).total_seconds() / 60  # minutos
+                time_since_previous = round(time_delta, 1)
+            
+            patches_data.append({
+                'sequence': idx,
+                'id': patch['id'][:12],
+                'timestamp': patch['timestamp'],
+                'timestamp_display': timestamp_obj.strftime('%d/%m/%Y %H:%M:%S'),
+                'line_count': patch['line_count_delta'],
+                'patch_text': patch['patch_text'],
+                'is_full': patch_meta.get('is_full_snapshot', False),
+                'time_since_previous': time_since_previous
+            })
+            
+            # Dados para gráfico Plotly
+            timeline_data.append({
+                'x': patch['timestamp'],
+                'y': cumulative_lines,
+                'sequence': idx,
+                'hover': f"Edição #{idx}<br>{cumulative_lines} linhas<br>{timestamp_obj.strftime('%d/%m/%Y %H:%M')}"
+            })
+        
+        # Adicionar snapshot final ao timeline
+        final_timestamp = datetime.fromisoformat(snapshot['timestamp'])
+        timeline_data.append({
+            'x': snapshot['timestamp'],
+            'y': snapshot['line_count'],
+            'sequence': len(patches) + 1,
+            'hover': f"Snapshot Final<br>{snapshot['line_count']} linhas<br>{final_timestamp.strftime('%d/%m/%Y %H:%M')}"
+        })
+        
+        return render_template(
+            'code_viewer.html',
+            student_name=student_info['student_name'],
+            student_hash=student_hash,
+            task_id=task_id,
+            final_code=final_code,
+            final_lines=snapshot['line_count'],
+            last_update=snapshot['timestamp'],
+            patches=patches_data,
+            timeline_data=json.dumps(timeline_data),
+            total_patches=len(patches)
+        )
+
+    
+    @app.route('/process_mining')
+    def process_mining_page():
+        """Página dedicada para Process Mining com controles e visualizações."""
+        conn = get_db()
+        
+        # Estatísticas de datasets
+        stats = {
+            'model_events': conn.execute("SELECT COUNT(*) as count FROM model_events").fetchone()['count'],
+            'analysis_events': conn.execute("SELECT COUNT(*) as count FROM analysis_events").fetchone()['count'],
+            'model_traces': conn.execute("SELECT COUNT(DISTINCT case_id) as count FROM model_events").fetchone()['count'],
+            'analysis_traces': conn.execute("SELECT COUNT(DISTINCT case_id) as count FROM analysis_events").fetchone()['count'],
+            'conformance_metrics': conn.execute("SELECT COUNT(*) as count FROM metrics WHERE metric_name='conformance_fitness'").fetchone()['count'],
+        }
+        
+        # Buscar lista de estudantes e tarefas para dropdown
+        students = conn.execute("SELECT DISTINCT student_hash, student_name FROM analysis_events ORDER BY student_name").fetchall()
+        tasks = conn.execute("SELECT DISTINCT task_id FROM analysis_events ORDER BY task_id").fetchall()
+        
+        # Buscar métricas de conformidade se existirem
+        conformance_data = []
+        if stats['conformance_metrics'] > 0:
+            conformance_data = conn.execute("""
+                SELECT student_hash, student_name, task_id, metric_value as fitness
+                FROM metrics
+                WHERE metric_name = 'conformance_fitness'
+                ORDER BY fitness DESC
+                LIMIT 20
+            """).fetchall()
+        
+        conn.close()
+        
+        return render_template('process_mining.html', 
+                             stats=stats,
+                             students=[{'hash': s['student_hash'], 'name': s['student_name'] or 'Unknown'} for s in students],
+                             tasks=[t['task_id'] for t in tasks],
+                             conformance_data=conformance_data)

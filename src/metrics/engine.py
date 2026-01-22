@@ -1,7 +1,5 @@
 """
 Metrics Engine - Cálculo de métricas pedagógicas TKO.
-
-Este módulo implementa as métricas definidas em docs/METRICS.md.
 """
 
 import hashlib
@@ -103,7 +101,7 @@ class MetricsEngine:
             logger.warning("[MetricsEngine.compute_all_metrics] - no_events_for_metrics", case_id=case_id, task_id=task_id)
             return []
         
-        student_hash = self._hash_student_id(student_id)
+        student_hash = student_id
         metrics = []
         
         logger.info(
@@ -153,7 +151,7 @@ class MetricsEngine:
         
         time_active = self._compute_time_active(events)
         metrics.append(MetricResult(
-            id=self._generate_metric_id(case_id, "time_active_seconds"),
+            id=self._generate_metric_id(case_id, "time_active_seconds", task_id),
             case_id=case_id,
             student_hash=student_hash,
             task_id=task_id,
@@ -164,7 +162,7 @@ class MetricsEngine:
         time_to_success = self._compute_time_to_first_success(events)
         if time_to_success is not None:
             metrics.append(MetricResult(
-                id=self._generate_metric_id(case_id, "time_to_first_success_seconds"),
+                id=self._generate_metric_id(case_id, "time_to_first_success_seconds", task_id),
                 case_id=case_id,
                 student_hash=student_hash,
                 task_id=task_id,
@@ -173,7 +171,7 @@ class MetricsEngine:
             ))
         
         metrics.append(MetricResult(
-            id=self._generate_metric_id(case_id, "sessions_count"),
+            id=self._generate_metric_id(case_id, "sessions_count", task_id),
             case_id=case_id,
             student_hash=student_hash,
             task_id=task_id,
@@ -184,7 +182,7 @@ class MetricsEngine:
         if sessions:
             avg_duration = sum(s.duration_seconds for s in sessions) / len(sessions)
             metrics.append(MetricResult(
-                id=self._generate_metric_id(case_id, "avg_session_duration_seconds"),
+                id=self._generate_metric_id(case_id, "avg_session_duration_seconds", task_id),
                 case_id=case_id,
                 student_hash=student_hash,
                 task_id=task_id,
@@ -238,7 +236,7 @@ class MetricsEngine:
         attempts = self._compute_attempts_to_success(events)
         if attempts is not None:
             metrics.append(MetricResult(
-                id=self._generate_metric_id(case_id, "attempts_to_success"),
+                id=self._generate_metric_id(case_id, "attempts_to_success", task_id),
                 case_id=case_id,
                 student_hash=student_hash,
                 task_id=task_id,
@@ -249,7 +247,7 @@ class MetricsEngine:
         final_rate = self._compute_final_success_rate(events)
         if final_rate is not None:
             metrics.append(MetricResult(
-                id=self._generate_metric_id(case_id, "final_success_rate"),
+                id=self._generate_metric_id(case_id, "final_success_rate", task_id),
                 case_id=case_id,
                 student_hash=student_hash,
                 task_id=task_id,
@@ -261,7 +259,7 @@ class MetricsEngine:
         if trajectory:
             pattern = self._analyze_trajectory_pattern(trajectory)
             metrics.append(MetricResult(
-                id=self._generate_metric_id(case_id, "success_trajectory_pattern"),
+                id=self._generate_metric_id(case_id, "success_trajectory_pattern", task_id),
                 case_id=case_id,
                 student_hash=student_hash,
                 task_id=task_id,
@@ -347,7 +345,7 @@ class MetricsEngine:
         
         edit_exec_ratio = self._compute_edit_exec_ratio(events)
         metrics.append(MetricResult(
-            id=self._generate_metric_id(case_id, "edit_exec_ratio"),
+            id=self._generate_metric_id(case_id, "edit_exec_ratio", task_id),
             case_id=case_id,
             student_hash=student_hash,
             task_id=task_id,
@@ -357,7 +355,7 @@ class MetricsEngine:
         
         cramming = self._detect_cramming(events)
         metrics.append(MetricResult(
-            id=self._generate_metric_id(case_id, "cramming_detected"),
+            id=self._generate_metric_id(case_id, "cramming_detected", task_id),
             case_id=case_id,
             student_hash=student_hash,
             task_id=task_id,
@@ -368,7 +366,7 @@ class MetricsEngine:
         
         trial_error = self._detect_trial_and_error(events)
         metrics.append(MetricResult(
-            id=self._generate_metric_id(case_id, "trial_and_error_detected"),
+            id=self._generate_metric_id(case_id, "trial_and_error_detected", task_id),
             case_id=case_id,
             student_hash=student_hash,
             task_id=task_id,
@@ -476,7 +474,7 @@ class MetricsEngine:
         if autonomy_scores:
             avg_autonomy = sum(autonomy_scores) / len(autonomy_scores)
             metrics.append(MetricResult(
-                id=self._generate_metric_id(case_id, "autonomy_score_avg"),
+                id=self._generate_metric_id(case_id, "autonomy_score_avg", task_id),
                 case_id=case_id,
                 student_hash=student_hash,
                 task_id=task_id,
@@ -487,7 +485,7 @@ class MetricsEngine:
         help_effectiveness = self._compute_help_effectiveness(events, self_events)
         if help_effectiveness is not None:
             metrics.append(MetricResult(
-                id=self._generate_metric_id(case_id, "help_effectiveness"),
+                id=self._generate_metric_id(case_id, "help_effectiveness", task_id),
                 case_id=case_id,
                 student_hash=student_hash,
                 task_id=task_id,
@@ -522,9 +520,9 @@ class MetricsEngine:
         return 1.0 if had_success else 0.5
     
 # Auxiliares    
-    def _generate_metric_id(self, case_id: str, metric_name: str) -> str:
+    def _generate_metric_id(self, case_id: str, metric_name: str, task_id: str = "") -> str:
         """Gera ID determinístico para métrica."""
-        data = f"{case_id}|{metric_name}"
+        data = f"{case_id}|{task_id}|{metric_name}"
         hash_obj = hashlib.sha256(data.encode('utf-8'))
         return hash_obj.hexdigest()[:16]
     

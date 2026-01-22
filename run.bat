@@ -32,5 +32,5 @@ if errorlevel 1 (
 echo [2/2] Iniciando servidor Flask...
 echo.
 
-REM Passar argumentos para serve.py (se fornecidos)
-python serve.py %*
+REM Passar argumentos para server.py (se fornecidos)
+python server.py %*

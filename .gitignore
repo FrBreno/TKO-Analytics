@@ -97,5 +97,7 @@ site/
 # Tests Demo files
 tests/demo_files/output/
 test_outputs/
+outputs
 *.csv
 *.xes
+xes_exports/

@@ -1,12 +1,12 @@
 """
-Script to serve TKO Analytics Dashboard
+TKO Analytics Dashboard Server
 
 Usage:
-    python serve.py [database_path]
+    python server.py [database_path]
 
 Example:
-    python serve.py src.db
-    python serve.py --help
+    python server.py src.db
+    python server.py --help
 """
 import sys
 import os

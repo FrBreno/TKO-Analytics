@@ -65,6 +65,46 @@ if errorlevel 1 (
 
 echo [OK] Dependencias instaladas com sucesso!
 
+REM Verificacao e tentativa de instalacao do Graphviz (binario 'dot')
+echo.
+echo [GRAPHVIZ] Verificando presença do Graphviz (comando 'dot')...
+where dot >nul 2>&1
+if %errorlevel%==0 (
+    for /f "delims=" %%i in ('dot -V 2^>^&1') do set "GV_OUT=%%i" & goto :gv_after_check
+) else (
+    echo [AVISO] Graphviz nao encontrado no PATH.
+    REM Tentar instalar via winget
+    where winget >nul 2>&1
+    if %errorlevel%==0 (
+        echo Tentando instalar Graphviz via winget...
+        winget install --id Graphviz.Graphviz -e --silent || echo [AVISO] Falha ao instalar via winget.
+    ) else (
+        where choco >nul 2>&1
+        if %errorlevel%==0 (
+            echo Tentando instalar Graphviz via Chocolatey...
+            choco install graphviz -y || echo [AVISO] Falha ao instalar via choco.
+        ) else (
+            echo [INSTRUCAO] Instale Graphviz manualmente: https://graphviz.org/download/
+        )
+    )
+)
+:gv_after_check
+if defined GV_OUT (
+    echo [OK] %GV_OUT%
+) else (
+    where dot >nul 2>&1
+    if %errorlevel%==0 (
+        dot -V 2>&1
+    ) else (
+        echo [AVISO] Graphviz nao encontrado. Algumas funcionalidades podem falhar.
+    )
+)
+
+REM Instalar wrapper Python 'graphviz'
+echo.
+echo [GRAPHVIZ-PY] Instalando pacote Python 'graphviz'...
+pip install graphviz --quiet || echo [AVISO] Falha ao instalar pacote Python 'graphviz'. Instale manualmente com 'pip install graphviz'.
+
 REM Criar arquivo .env
 echo.
 echo [4/4] Configurando ambiente...

@@ -1,111 +1,79 @@
-# TKO-Analytics
+# TKO-Analytics 🚀
 
-Sistema de análise de telemetria educacional do TKO (Test Kit Operations) que transforma logs de atividades de estudantes em insights pedagógicos através de dashboards interativos.
+Uma ferramenta local para que professores analisem o processo de desenvolvimento dos estudantes utilizando a telemetria gerada pelo TKO (Test Kit Operations). 💡
 
-## 📋 Descrição
+O que faz, de forma prática ✅
+- Processa os logs produzidos pelo TKO e gera métricas pedagógicas.
+- Apresenta dashboards interativos com mapas de conformidade, timelines de execução, evolução de código e visualizador de diffs. 📊
 
-TKO-Analytics é uma ferramenta para **professores** analisarem o comportamento e desempenho de estudantes em atividades de programação. O sistema:
+Por quem e para quê 🎯
+- Destinado a docentes e equipes de ensino que querem entender como os alunos trabalham durante exercícios de programação, sem depender exclusivamente de commits do Git.
 
-- Processa logs de telemetria exportados do TKO
-- Gera métricas pedagógicas (tempo de trabalho, tentativas até sucesso, padrões comportamentais)
-- Apresenta dashboards interativos com visualizações (heatmaps, timelines, estatísticas)
-- Executa **localmente** (sem necessidade de servidor ou internet)
-- Utiliza banco de dados SQLite (portável e simples)
-- Pseudonimiza dados de estudantes para privacidade
+Principais tecnologias (visão geral) 🧰
+- Python 3.12 — aplicação e scripts de análise
+- Flask — interface web local (dashboard)
+- SQLite — banco portátil para armazenar eventos e métricas
+- Plotly / CSS / Bootstrap — visualizações interativas e interface
+- PM4Py (opcional) e Graphviz — descoberta de processos e renderização de Petri nets (visualizações) 🖼️
 
-## 🚀 Setup e Execução
+Pré-requisitos rápidos ✅
+- Python 3.12 ou superior
+- Graphviz (para renderização de modelos) — o instalador do projeto tenta automatizar a instalação, mas verifique se `dot` está disponível no PATH 🖥️
 
-### Pré-requisitos
-
-- **Python 3.12 ou superior**
-- Sistema operacional: Windows, Linux ou macOS
-
-### Passo a Passo Completo
-
-#### 1. Clonar o Repositório
-
+Instalação e execução (passos curtos) 🛠️
+1. Clone o repositório e abra o diretório do projeto:
 ```bash
 git clone <url-do-repositorio>
 cd TKO-Analytics
 ```
-
-#### 2. Executar Setup Automatizado
-
-**Windows:**
-```bash
-setup.bat
+2. Execute o instalador automático (o script cria um ambiente virtual, instala dependências e cria `.env`):
+- Windows (Prompt):
+```powershell
+.\setup.bat
 ```
-
-**Linux/Mac:**
+- Linux / macOS (Terminal):
 ```bash
 chmod +x setup.sh
 ./setup.sh
 ```
-
-**O que o setup faz:**
-- Verifica instalação do Python
-- Cria ambiente virtual (`.venv`)
-- Instala todas as dependências automaticamente
-- Gera arquivo `.env` com configurações de segurança
-- **Tempo estimado:** 2-5 minutos
-
-#### 3. Executar o Dashboard
-
-**Windows:**
-```bash
-run.bat
+3. Inicie o dashboard:
+- Windows:
+```powershell
+.\run.bat
 ```
-
-**Linux/Mac:**
+- Linux / macOS:
 ```bash
-chmod +x run.sh
 ./run.sh
 ```
+4. Abra o navegador em `http://localhost:5000` para usar a aplicação.
 
-#### 4. Acessar no Navegador
+Primeira importação de dados (fluxo recomendado) 📥
+1. Ao abrir o dashboard pela primeira vez, use o assistente (wizard) de importação.
+2. Selecione a pasta que contém os dados exportados pelo TKO.
+3. Escolha o modo: `Limpa` (apaga dados anteriores) ou `Incremental` (acrescenta aos dados existentes).
+4. Aguarde o processamento; quando concluído as visualizações ficarão disponíveis.
 
-Abra seu navegador em:
-```
-http://localhost:5000
-```
+Dicas rápidas e solução de problemas 🩺
+- Se o Graphviz não estiver instalado, algumas visualizações (Petri nets) não serão renderizadas — o `setup` tenta instalá-lo, mas você pode instalar manualmente:
+   - Ubuntu/Debian: `sudo apt install graphviz`
+   - Fedora: `sudo dnf install graphviz`
+   - macOS (Homebrew): `brew install graphviz`
+   - Windows: use `winget install Graphviz.Graphviz` ou instale via instalador em https://graphviz.org/download/
+- Se houver problemas de dependência Python, ative o ambiente virtual (`.venv\Scripts\activate` no Windows ou `source .venv/bin/activate` no Linux/macOS) e execute `pip install -r requirements.txt`.
 
-### Primeira Importação de Dados
+Onde olhar: módulos principais (visão amigável) 🧭
+- `src/dashboard/` — aplicação web (rotas, templates e estáticos). É a interface que você usa no navegador.
+- `src/etl/` — código responsável por carregar, limpar e inserir eventos no banco de dados.
+- `src/process_mining/` — ferramentas que geram modelos e checam conformidade (útil quando fizer análises PM).
+- `src/visualizations/` — funções que geram heatmaps, timelines e gráficos usados no dashboard.
+- `src/models/` e `src/metrics/` — representação de eventos, métricas calculadas e lógica de agregação.
 
-1. Na primeira execução, o sistema mostrará um **wizard de configuração**
-2. Clique em **"Começar Importação"**
-3. Use o **browser de diretórios** para selecionar a pasta com dados do TKO
-4. Configure o **modo de importação**:
-   - **Limpa**: Remove dados anteriores (padrão na primeira vez)
-   - **Incremental**: Adiciona aos dados existentes
-5. Clique em **"Importar Dados"**
-6. Aguarde o processamento
-7. Dashboard estará disponível com os dados importados
+Privacidade e ética 🔒
+- Os dados são processados localmente por padrão; o sistema pseudonimiza identificadores de estudantes para proteção de privacidade.
 
+Ajuda e suporte 📞
+- Logs e outputs ficam em `outputs/` e `logs/` (quando aplicável).
+- Para problemas de instalação, verifique o conteúdo dos scripts `setup.bat` / `setup.sh` e as instruções acima.
 
-## 🛠️ Comandos Úteis
-
-```bash
-# Executar dashboard
-run.bat              # Windows
-./run.sh             # Linux/Mac
-
-# Executar com banco específico
-run.bat caminho/para/banco.db
-
-# Rodar testes (após ativar ambiente virtual)
-pytest
-
-# Importar dados via linha de comando
-python scripts/import_tko_data.py --root-dir "caminho/para/turma" --output cohort_nome
-```
-
-## 🔒 Privacidade
-
-- IDs de estudantes são **pseudonimizados** (SHA-256 com salt)
-- Dados processados **localmente** (sem envio para servidores externos)
-- Arquivo `.env` contém chaves de segurança (não compartilhar)
-
-## 📞 Suporte
-
-Para problemas durante a instalação ou execução, consulte:
-- Logs do sistema na pasta `logs/`
+Contribuições e código-fonte 🤝
+- O código do projeto está na pasta `src` deste repositório; contribuições são bem-vindas via pull requests.

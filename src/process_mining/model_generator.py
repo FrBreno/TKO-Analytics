@@ -324,3 +324,107 @@ class ProcessModelGenerator:
         
         logger.info("[ProcessModelGenerator.get_available_tasks] - Found tasks", count=len(tasks))
         return tasks
+
+    def export_model_pnml(
+        self,
+        out_path: str,
+        noise_threshold: float = 0.2,
+        task_id: Optional[str] = None,
+    ) -> None:
+        """
+        Gera o modelo (usando `generate_model`) e exporta para PNML em `out_path`.
+
+        Tenta diferentes rotas de exportação dependendo da versão do PM4Py instalada.
+
+        Args:
+            out_path: Caminho do arquivo PNML de saída.
+            noise_threshold: Parâmetro do Inductive Miner.
+            task_id: task_id opcional para gerar modelo específico.
+
+        Raises:
+            ModelGenerationError: se a exportação falhar.
+        """
+        net, initial_marking, final_marking = self.generate_model(
+            noise_threshold=noise_threshold, task_id=task_id
+        )
+
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Tentativas de exportação compatíveis com diferentes versões do pm4py
+        last_error = None
+        # 1) modern exporter.apply(net, output_path, initial_marking=..., final_marking=...)
+        try:
+            from pm4py.objects.petri.exporter import exporter as pnml_exporter
+            try:
+                pnml_exporter.apply(net, str(out_path), initial_marking=initial_marking, final_marking=final_marking)
+                return
+            except TypeError as e:
+                last_error = e
+            # 2) older exporter signature: apply(net, initial_marking, final_marking, output_path)
+            try:
+                pnml_exporter.apply(net, initial_marking, final_marking, str(out_path))
+                return
+            except TypeError as e:
+                last_error = e
+        except Exception as e:
+            last_error = e
+
+        # 3) Try pm4py.write_pnml with possible signatures
+        try:
+            # signature: write_pnml(net, initial_marking, final_marking, file_path)
+            try:
+                pm4py.write_pnml(net, initial_marking, final_marking, str(out_path))
+                return
+            except TypeError as e:
+                last_error = e
+            # signature variant: write_pnml(net, file_path, initial_marking, final_marking)
+            try:
+                pm4py.write_pnml(net, str(out_path), initial_marking, final_marking)
+                return
+            except TypeError as e:
+                last_error = e
+        except Exception as e:
+            last_error = e
+
+        # 4) As last resort, try pn_visualizer to generate SVG and skip PNML (not ideal)
+        try:
+            from pm4py.visualization.petri_net import visualizer as pn_visualizer
+            gviz = pn_visualizer.apply(net, initial_marking, final_marking)
+            # attempt to save as SVG next to PNML
+            svg_path = str(out_path.with_suffix('.svg'))
+            pn_visualizer.save(gviz, svg_path)
+        except Exception as e:
+            # report earlier error
+            raise ModelGenerationError(f"Failed to export PNML; last error: {last_error}; svg fallback error: {e}")
+        # If reached here, write SVG but PNML export failed
+        raise ModelGenerationError(f"PNML export failed for unknown reasons; last error: {last_error}")
+
+
+if __name__ == '__main__':
+    # Pequena CLI para gerar PNMLs por tarefa
+    import argparse
+
+    p = argparse.ArgumentParser(description='Generate PNML models from model_events using ProcessModelGenerator')
+    p.add_argument('--db', required=True, help='Path to SQLite DB')
+    p.add_argument('--out-dir', default='models', help='Directory to write PNML files')
+    p.add_argument('--noise', type=float, default=0.2, help='noise_threshold for Inductive Miner')
+    p.add_argument('--tasks', help='Comma-separated list of task_ids to generate (default: all)')
+    args = p.parse_args()
+
+    generator = ProcessModelGenerator(db_path=args.db)
+
+    if args.tasks:
+        task_list = [t.strip() for t in args.tasks.split(',') if t.strip()]
+    else:
+        task_list = [t['task_id'] for t in generator.get_available_tasks()]
+
+    print(f'Generating PNML models for {len(task_list)} tasks into {args.out_dir} (noise={args.noise})')
+
+    for tid in task_list:
+        out_file = Path(args.out_dir) / f"{tid}.pnml"
+        try:
+            print(f' - Generating model for task {tid} -> {out_file}')
+            generator.export_model_pnml(str(out_file), noise_threshold=args.noise, task_id=tid)
+        except Exception as e:
+            print(f'Failed to generate model for {tid}: {e}')

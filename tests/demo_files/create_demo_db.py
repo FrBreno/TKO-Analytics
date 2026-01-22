@@ -164,9 +164,9 @@ def main():
     print(f"   - SQLite: {db_path}")
     print(f"   - XES: {xes_path}")
     print(f"\n💡 Para iniciar o dashboard:")
-    print(f"   python serve.py {db_path.relative_to(script_dir.parent.parent)}")
+    print(f"   python server.py {db_path.relative_to(script_dir.parent.parent)}")
     print(f"\n   Ou use o caminho absoluto:")
-    print(f"   python serve.py {db_path.absolute()}")
+    print(f"   python server.py {db_path.absolute()}")
     print(f"\n🌐 Acesse: http://localhost:5000")
     print()
 

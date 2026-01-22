@@ -266,7 +266,7 @@ class ConformanceChecker:
             
             # Precision: especificidade do modelo
             precision = pm4py.precision_token_based_replay(log, net, im, fm)
-            
+
             # Identifica desvios
             alignments = pm4py.conformance_diagnostics_token_based_replay(log, net, im, fm)
             

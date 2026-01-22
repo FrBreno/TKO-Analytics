@@ -1329,22 +1329,16 @@ def register_routes(app: Flask):
                 loop_threshold=5
             )
             
-            # 3. Executa replay para estudante+tarefa específicos
-            results = replayer.replay_all_students(
-                task_id=requested_task_id,
-                model_scope=model_scope
-            )
-            
-            # Filtrar resultado para o estudante específico
-            student_result = next(
-                (m for m in results if m.student_hash == requested_student_hash),
-                None
-            )
-            
-            if not student_result:
+            # 3. Executa replay APENAS para o estudante+tarefa solicitados
+            try:
+                student_result = replayer.replay_student_task(
+                    student_hash=requested_student_hash,
+                    task_id=requested_task_id
+                )
+            except Exception as e:
                 return jsonify({
                     'success': False,
-                    'error': f'Nenhum evento ANALYSIS encontrado para estudante "{requested_student_hash[:16]}..." na tarefa "{requested_task_id}".'
+                    'error': f'Nenhum evento ANALYSIS encontrado para estudante "{requested_student_hash[:16]}..." na tarefa "{requested_task_id}". Detalhes: {str(e)}'
                 }), 404
             
             # 4. Salva métrica no banco
@@ -1816,6 +1810,8 @@ def register_routes(app: Flask):
             )
             
             events = replayer._fetch_analysis_events(student_hash, task_id)
+
+            logger.debug("REF - Events fetched", events=events)
             
             if not events:
                 return jsonify({
@@ -1825,6 +1821,8 @@ def register_routes(app: Flask):
             
             case_id = events[0]['case_id']
             trace = replayer._events_to_trace(events, case_id)
+
+            logger.info("[visualize_student_trace] - Student trace fetched", trace=trace)
             
             # 3. Cria visualização de trajetória
             visualizer = ProcessVisualizer()
@@ -1863,23 +1861,52 @@ def register_routes(app: Flask):
                       'conformance_missing_tokens',
                       'conformance_remaining_tokens',
                       'conformance_consumed_tokens',
-                      'conformance_produced_tokens'
+                      'conformance_produced_tokens',
+                      'conformance_trace_is_fit',
+                      'conformance_activated_transitions',
+                      'conformance_reached_marking',
+                      'conformance_enabled_transitions_in_marking',
+                      'conformance_transitions_with_problems'
                   )
                 ORDER BY computed_at DESC
             """, (student_hash, task_id))
             
             metrics_rows = cursor.fetchall()
             metrics_dict = {}
+            metadata_dict = {}
             for row in metrics_rows:
                 metrics_dict[row['metric_name']] = row['metric_value']
+                if row['metadata']:
+                    metadata_dict[row['metric_name']] = json.loads(row['metadata'])
             
-            # Extrair métricas
+            # Extrair métricas básicas
             fitness = float(metrics_dict.get('conformance_fitness', 0.0))
             trace_length = int(metrics_dict.get('conformance_trace_length', len(events)))
             missing_tokens = int(metrics_dict.get('conformance_missing_tokens', 0))
             remaining_tokens = int(metrics_dict.get('conformance_remaining_tokens', 0))
             consumed_tokens = int(metrics_dict.get('conformance_consumed_tokens', 0))
             produced_tokens = int(metrics_dict.get('conformance_produced_tokens', 0))
+            
+            # Extrair métricas detalhadas (novas)
+            trace_is_fit = bool(metrics_dict.get('conformance_trace_is_fit', 0))
+            
+            # Para as listas, pegar do metadata, não do metric_value
+            activated_transitions = []
+            reached_marking = []
+            enabled_transitions_in_marking = []
+            transitions_with_problems = []
+            
+            if 'conformance_activated_transitions' in metadata_dict:
+                activated_transitions = metadata_dict['conformance_activated_transitions']
+            
+            if 'conformance_reached_marking' in metadata_dict:
+                reached_marking = metadata_dict['conformance_reached_marking']
+            
+            if 'conformance_enabled_transitions_in_marking' in metadata_dict:
+                enabled_transitions_in_marking = metadata_dict['conformance_enabled_transitions_in_marking']
+            
+            if 'conformance_transitions_with_problems' in metadata_dict:
+                transitions_with_problems = metadata_dict['conformance_transitions_with_problems']
             
             logger.info("[visualize_student_trace] - Metrics retrieved",
                        fitness=fitness,
@@ -1914,18 +1941,18 @@ def register_routes(app: Flask):
                             {'Processo completo' if remaining_tokens == 0 else f'{remaining_tokens} atividade(s) incompleta(s)'}
                         </div>
                     </div>
-                    <div class="metric-item" title="Consumed Tokens representam o número total de atividades que foram executadas com sucesso e que estão alinhadas com o modelo de processo. Valores mais altos indicam maior número de atividades válidas realizadas pelo estudante.">
+                    <div class="metric-item" title="Consumed Tokens representam o número de transições (atividades + skips invisíveis) que foram executadas durante o replay no modelo de Petri. ATENÇÃO: Este valor pode ser maior que o número de eventos reais, pois inclui transições skip (τ) invisíveis adicionadas pelo algoritmo de descoberta do modelo para permitir flexibilidade nos caminhos. Use o Fitness como métrica principal de conformidade.">
                         <div class="metric-label">Consumed Tokens</div>
                         <div class="metric-value">{consumed_tokens}</div>
                         <div class="metric-badge badge-info">
-                            {consumed_tokens} atividade(s) válida(s)
+                            {consumed_tokens} transição(ões) ativada(s)*
                         </div>
                     </div>
-                    <div class="metric-item" title="Produced Tokens representam o número de tokens gerados durante a execução do processo. Normalmente deve ser igual ou próximo aos Consumed Tokens. Desequilíbrios significativos podem indicar problemas na execução ou no log de eventos.">
+                    <div class="metric-item" title="Produced Tokens representam o número de transições que geraram tokens durante o replay. Normalmente é igual aos Consumed Tokens. ATENÇÃO: Este valor inclui transições skip (τ) invisíveis do modelo, então pode ser maior que o número de eventos reais do aluno. Use o Fitness como métrica principal.">
                         <div class="metric-label">Produced Tokens</div>
                         <div class="metric-value">{produced_tokens}</div>
                         <div class="metric-badge badge-info">
-                            {produced_tokens} token(s) gerado(s)
+                            {produced_tokens} transição(ões) produzida(s)*
                         </div>
                     </div>
                     <div class="metric-item" title="Eventos no Trace representa o número total de atividades registradas durante a execução da tarefa pelo estudante. Inclui todas as ações como navegação, execução de testes e autoavaliação. Um número muito alto comparado à média pode indicar dificuldades ou abordagem ineficiente.">
@@ -1935,6 +1962,106 @@ def register_routes(app: Flask):
                             {trace_length} evento(s) registrado(s)
                         </div>
                     </div>
+                </div>
+                <div style="margin-top: 15px; padding: 12px; background: rgba(255,255,255,0.2); border-radius: 4px; font-size: 0.85rem; line-height: 1.5;">
+                    <strong>ℹ️ Nota sobre Consumed/Produced Tokens:</strong><br>
+                    Os valores de <em>Consumed</em> e <em>Produced Tokens</em> podem ser maiores que o número de eventos reais ({trace_length}), 
+                    pois incluem transições skip (τ) invisíveis adicionadas pelo algoritmo Inductive Miner para permitir flexibilidade nos caminhos do modelo.
+                </div>
+            </div>
+            '''
+            
+            # Criar card de informações detalhadas do replay
+            activated_trans_list = '<ul>' + ''.join([f'<li>{t}</li>' for t in activated_transitions[:10]]) + '</ul>'
+            if len(activated_transitions) > 10:
+                activated_trans_list += f'<p style="font-style: italic; font-size: 0.9rem;">... e mais {len(activated_transitions) - 10} transições</p>'
+            
+            reached_marking_list = '<ul>' + ''.join([f'<li>{m}</li>' for m in reached_marking]) + '</ul>' if reached_marking else '<p>Nenhuma marcação alcançada</p>'
+            enabled_trans_list = '<ul>' + ''.join([f'<li>{t}</li>' for t in enabled_transitions_in_marking]) + '</ul>' if enabled_transitions_in_marking else '<p>Nenhuma transição habilitada</p>'
+            problems_list = '<ul>' + ''.join([f'<li style="color: #dc3545; font-weight: bold;">{t}</li>' for t in transitions_with_problems]) + '</ul>' if transitions_with_problems else '<p style="color: #28a745;">Nenhuma transição problemática detectada</p>'
+            
+            fit_status_html = '<span style="color: #28a745; font-weight: bold;">✓ SIM</span>' if trace_is_fit else '<span style="color: #dc3545; font-weight: bold;">✗ NÃO</span>'
+            
+            detailed_replay_card = f'''
+            <div class="detailed-replay-card">
+                <h3><i class="fas fa-microscope"></i> Informações Detalhadas do Replay (PM4Py)</h3>
+                <p style="font-size: 0.95rem; opacity: 0.9; margin-bottom: 20px;">
+                    Esta seção apresenta informações técnicas extraídas diretamente do algoritmo de Token-Based Replay do PM4Py.
+                    Essas métricas são úteis para análise profunda do comportamento do estudante e diagnóstico de problemas específicos.
+                </p>
+                
+                <div class="detailed-grid">
+                    <div class="detailed-item">
+                        <h4><i class="fas fa-check-circle"></i> Trace is Fit (Perfeitamente Ajustado)</h4>
+                        <div class="detailed-value">{fit_status_html}</div>
+                        <p class="detailed-description">
+                            Indica se o trace é considerado perfeitamente ajustado ao modelo (fitness = 1.0).
+                            <strong>False</strong> significa que houve desvios, mesmo que pequenos.
+                        </p>
+                    </div>
+                    
+                    <div class="detailed-item">
+                        <h4><i class="fas fa-route"></i> Transições Ativadas</h4>
+                        <div class="detailed-value">{len(activated_transitions)} transição(ões)</div>
+                        <p class="detailed-description">
+                            Lista de transições disparadas durante o replay, <strong>na ordem de execução</strong>.
+                            Inclui transições visíveis (atividades reais) <strong>e invisíveis</strong> (skip/τ).
+                        </p>
+                        <div class="detailed-list">
+                            {activated_trans_list}
+                        </div>
+                    </div>
+                    
+                    <div class="detailed-item">
+                        <h4><i class="fas fa-map-marker-alt"></i> Marcação Alcançada (Reached Marking)</h4>
+                        <div class="detailed-value">{len(reached_marking)} place(s) com tokens</div>
+                        <p class="detailed-description">
+                            Distribuição de tokens nos <em>places</em> ao final do replay.
+                            Idealmente, deveria haver tokens apenas no(s) place(s) final(is).
+                            Tokens em places intermediários indicam processo incompleto.
+                        </p>
+                        <div class="detailed-list">
+                            {reached_marking_list}
+                        </div>
+                    </div>
+                    
+                    <div class="detailed-item">
+                        <h4><i class="fas fa-unlock"></i> Transições Habilitadas na Marcação Final</h4>
+                        <div class="detailed-value">{len(enabled_transitions_in_marking)} transição(ões) habilitada(s)</div>
+                        <p class="detailed-description">
+                            Transições que poderiam ser executadas na marcação final alcançada.
+                            Se há transições habilitadas, significa que o modelo esperava que o estudante continuasse
+                            (ex.: fazer autoavaliação, mover arquivos, etc.) mas o trace terminou.
+                        </p>
+                        <div class="detailed-list">
+                            {enabled_trans_list}
+                        </div>
+                    </div>
+                    
+                    <div class="detailed-item alert-box">
+                        <h4><i class="fas fa-exclamation-triangle"></i> Transições com Problemas</h4>
+                        <div class="detailed-value">{len(transitions_with_problems)} problema(s) detectado(s)</div>
+                        <p class="detailed-description">
+                            Transições identificadas como problemáticas durante o replay.
+                            <strong>Possíveis causas:</strong>
+                            <ul style="font-size: 0.9rem; margin-top: 8px;">
+                                <li>Disparou quando não deveria</li>
+                                <li>Disparou muitas vezes (loop excessivo)</li>
+                                <li>Consumiu/produziu tokens de forma inconsistente</li>
+                            </ul>
+                        </p>
+                        <div class="detailed-list">
+                            {problems_list}
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="technical-note">
+                    <strong>📘 Nota Técnica:</strong><br>
+                    Transições <strong>invisíveis (skip/τ)</strong> são adicionadas pelo algoritmo Inductive Miner para permitir
+                    flexibilidade nos caminhos do modelo. Elas não correspondem a eventos reais do estudante, mas são necessárias
+                    para que o modelo possa representar diferentes variantes do processo. Por isso, os valores de
+                    <em>Consumed/Produced Tokens</em> e <em>Transições Ativadas</em> podem ser maiores que o número de eventos no trace.
                 </div>
             </div>
             '''
@@ -2110,6 +2237,84 @@ def register_routes(app: Flask):
             opacity: 0.8;
             margin-top: 8px;
         }}
+        .detailed-replay-card {{
+            margin-bottom: 30px;
+            padding: 25px;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            color: white;
+        }}
+        .detailed-replay-card h3 {{
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: white;
+            font-size: 1.5rem;
+            border-bottom: 2px solid rgba(255,255,255,0.3);
+            padding-bottom: 10px;
+        }}
+        .detailed-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }}
+        .detailed-item {{
+            background: rgba(255,255,255,0.15);
+            padding: 20px;
+            border-radius: 6px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }}
+        .detailed-item h4 {{
+            margin-top: 0;
+            margin-bottom: 12px;
+            font-size: 1.1rem;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .detailed-value {{
+            font-size: 1.8rem;
+            font-weight: bold;
+            margin: 12px 0;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.2);
+        }}
+        .detailed-description {{
+            font-size: 0.9rem;
+            opacity: 0.95;
+            line-height: 1.5;
+            margin-bottom: 12px;
+        }}
+        .detailed-list {{
+            max-height: 200px;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.1);
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }}
+        .detailed-list ul {{
+            margin: 0;
+            padding-left: 20px;
+        }}
+        .detailed-list li {{
+            margin: 4px 0;
+        }}
+        .alert-box {{
+            background: rgba(220, 53, 69, 0.2);
+            border: 2px solid rgba(220, 53, 69, 0.5);
+        }}
+        .technical-note {{
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 4px;
+            border-left: 4px solid rgba(255,255,255,0.5);
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }}
         .events-container {{
             margin-top: 30px;
         }}
@@ -2174,6 +2379,8 @@ def register_routes(app: Flask):
     </div>
     
     {metrics_card_html}
+    
+    {detailed_replay_card}
     
     <div class="events-container">
         {analysis_events_html}

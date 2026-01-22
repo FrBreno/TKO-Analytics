@@ -1,7 +1,5 @@
 """
 Metrics Engine - Cálculo de métricas pedagógicas TKO.
-
-Este módulo implementa as métricas definidas em docs/METRICS.md.
 """
 
 import hashlib

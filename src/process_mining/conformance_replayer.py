@@ -43,6 +43,11 @@ class ConformanceMetrics:
         excessive_loops_count: Loops excessivos (>limiar)
         trace_length: Tamanho do trace
         deviations_detail: Lista de desvios específicos
+        trace_is_fit: Se o trace é perfeitamente ajustado (fitness=1.0)
+        activated_transitions: Lista de transições ativadas durante replay
+        reached_marking: Marcação alcançada ao final do replay
+        enabled_transitions_in_marking: Transições habilitadas na marcação final
+        transitions_with_problems: Transições que causaram problemas
     """
     case_id: str
     student_hash: str
@@ -56,6 +61,11 @@ class ConformanceMetrics:
     excessive_loops_count: int
     trace_length: int
     deviations_detail: List[Dict[str, Any]]
+    trace_is_fit: bool = False
+    activated_transitions: List[str] = None
+    reached_marking: List[str] = None
+    enabled_transitions_in_marking: List[str] = None
+    transitions_with_problems: List[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Converte para dicionário."""
@@ -71,7 +81,12 @@ class ConformanceMetrics:
             "deviations_count": self.deviations_count,
             "excessive_loops_count": self.excessive_loops_count,
             "trace_length": self.trace_length,
-            "deviations_detail": self.deviations_detail
+            "deviations_detail": self.deviations_detail,
+            "trace_is_fit": self.trace_is_fit,
+            "activated_transitions": self.activated_transitions or [],
+            "reached_marking": self.reached_marking or [],
+            "enabled_transitions_in_marking": self.enabled_transitions_in_marking or [],
+            "transitions_with_problems": self.transitions_with_problems or []
         }
 
 
@@ -157,7 +172,7 @@ class ConformanceReplayer:
         trace = self._events_to_trace(events, case_id)
         
         # 3. Executa token-based replay
-        fitness, deviations, token_metrics = self._token_based_replay(trace)
+        fitness, deviations, extended_metrics = self._token_based_replay(trace)
         
         # 4. Detecta loops excessivos
         loops = self._detect_excessive_loops(events)
@@ -168,23 +183,28 @@ class ConformanceReplayer:
             student_hash=student_hash,
             task_id=task_id,
             fitness=fitness,
-            missing_tokens=token_metrics['missing'],
-            remaining_tokens=token_metrics['remaining'],
-            consumed_tokens=token_metrics['consumed'],
-            produced_tokens=token_metrics['produced'],
+            missing_tokens=extended_metrics['missing'],
+            remaining_tokens=extended_metrics['remaining'],
+            consumed_tokens=extended_metrics['consumed'],
+            produced_tokens=extended_metrics['produced'],
             deviations_count=len(deviations),
             excessive_loops_count=len(loops),
             trace_length=len(events),
-            deviations_detail=deviations + loops
+            deviations_detail=deviations + loops,
+            trace_is_fit=extended_metrics.get('trace_is_fit', False),
+            activated_transitions=extended_metrics.get('activated_transitions', []),
+            reached_marking=extended_metrics.get('reached_marking', []),
+            enabled_transitions_in_marking=extended_metrics.get('enabled_transitions_in_marking', []),
+            transitions_with_problems=extended_metrics.get('transitions_with_problems', [])
         )
         
         logger.info("[ConformanceReplayer.replay_student_task] - Replay completed",
                    case_id=case_id,
                    fitness=fitness,
-                   missing_tokens=token_metrics['missing'],
-                   remaining_tokens=token_metrics['remaining'],
-                   consumed_tokens=token_metrics['consumed'],
-                   produced_tokens=token_metrics['produced'],
+                   missing_tokens=extended_metrics['missing'],
+                   remaining_tokens=extended_metrics['remaining'],
+                   consumed_tokens=extended_metrics['consumed'],
+                   produced_tokens=extended_metrics['produced'],
                    deviations=len(deviations),
                    loops=len(loops))
         
@@ -376,6 +396,81 @@ class ConformanceReplayer:
                 None
             ))
             
+            # Trace Is Fit (novo)
+            cursor.execute("""
+                INSERT OR REPLACE INTO metrics (
+                    id, case_id, student_hash, task_id, metric_name, metric_value, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                f"conformance_trace_is_fit_{metrics.case_id}",
+                metrics.case_id,
+                metrics.student_hash,
+                metrics.task_id,
+                "conformance_trace_is_fit",
+                1 if metrics.trace_is_fit else 0,
+                None
+            ))
+            
+            # Activated Transitions (novo)
+            cursor.execute("""
+                INSERT OR REPLACE INTO metrics (
+                    id, case_id, student_hash, task_id, metric_name, metric_value, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                f"conformance_activated_transitions_{metrics.case_id}",
+                metrics.case_id,
+                metrics.student_hash,
+                metrics.task_id,
+                "conformance_activated_transitions",
+                len(metrics.activated_transitions) if metrics.activated_transitions else 0,
+                json.dumps(metrics.activated_transitions or [])
+            ))
+            
+            # Reached Marking (novo)
+            cursor.execute("""
+                INSERT OR REPLACE INTO metrics (
+                    id, case_id, student_hash, task_id, metric_name, metric_value, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                f"conformance_reached_marking_{metrics.case_id}",
+                metrics.case_id,
+                metrics.student_hash,
+                metrics.task_id,
+                "conformance_reached_marking",
+                len(metrics.reached_marking) if metrics.reached_marking else 0,
+                json.dumps(metrics.reached_marking or [])
+            ))
+            
+            # Enabled Transitions in Marking (novo)
+            cursor.execute("""
+                INSERT OR REPLACE INTO metrics (
+                    id, case_id, student_hash, task_id, metric_name, metric_value, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                f"conformance_enabled_transitions_in_marking_{metrics.case_id}",
+                metrics.case_id,
+                metrics.student_hash,
+                metrics.task_id,
+                "conformance_enabled_transitions_in_marking",
+                len(metrics.enabled_transitions_in_marking) if metrics.enabled_transitions_in_marking else 0,
+                json.dumps(metrics.enabled_transitions_in_marking or [])
+            ))
+            
+            # Transitions with Problems (novo)
+            cursor.execute("""
+                INSERT OR REPLACE INTO metrics (
+                    id, case_id, student_hash, task_id, metric_name, metric_value, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                f"conformance_transitions_with_problems_{metrics.case_id}",
+                metrics.case_id,
+                metrics.student_hash,
+                metrics.task_id,
+                "conformance_transitions_with_problems",
+                len(metrics.transitions_with_problems) if metrics.transitions_with_problems else 0,
+                json.dumps(metrics.transitions_with_problems or [])
+            ))
+            
             conn.commit()
             
             logger.info("[ConformanceReplayer.save_conformance_metrics] - Metrics saved",
@@ -498,13 +593,16 @@ class ConformanceReplayer:
         
         return trace
     
-    def _token_based_replay(self, trace: Trace) -> Tuple[float, List[Dict[str, Any]], Dict[str, int]]:
+    def _token_based_replay(self, trace: Trace) -> Tuple[float, List[Dict[str, Any]], Dict[str, Any]]:
         """
         Executa token-based replay usando PM4Py.
         
         Returns:
-            Tupla (fitness, deviations_list, token_metrics)
-            onde token_metrics = {'missing': int, 'remaining': int, 'consumed': int, 'produced': int}
+            Tupla (fitness, deviations_list, extended_metrics)
+            onde extended_metrics inclui: token_metrics + informações extras do replay
+            
+        IMPORTANTE: Os valores de consumed/produced podem incluir transições skip (τ) invisíveis
+        adicionadas pelo Inductive Miner. O fitness retornado pelo PM4Py já leva isso em conta.
         """
         # Cria EventLog com único trace
         log = EventLog([trace])
@@ -520,89 +618,86 @@ class ConformanceReplayer:
             self.initial_marking,
             self.final_marking
         )
-        
-        # Log do resultado RAW do PM4Py para debug
-        logger.info("[ConformanceReplayer._token_based_replay] - PM4Py raw result",
-                   replay_result_type=type(replay_result).__name__,
-                   replay_result_len=len(replay_result) if replay_result else 0,
-                   replay_result_content=str(replay_result)[:500])
+
         
         if not replay_result:
             logger.warning("[ConformanceReplayer._token_based_replay] - Empty replay result")
-            token_metrics = {'missing': 0, 'remaining': 0, 'consumed': 0, 'produced': 0}
-            return 0.0, [], token_metrics
+            extended_metrics = {
+                'missing': 0, 'remaining': 0, 'consumed': 0, 'produced': 0,
+                'trace_is_fit': False, 'activated_transitions': [], 'reached_marking': [],
+                'enabled_transitions_in_marking': [], 'transitions_with_problems': []
+            }
+            return 0.0, [], extended_metrics
         
         # Extrai resultado do primeiro (único) trace
         trace_result = replay_result[0]
         
-        # Log das chaves/atributos disponíveis no trace_result
-        if isinstance(trace_result, dict):
-            logger.info("[ConformanceReplayer._token_based_replay] - Trace result is dict",
-                       keys=list(trace_result.keys()))
-        else:
-            # Se não é dict, pode ser um objeto com atributos
-            logger.info("[ConformanceReplayer._token_based_replay] - Trace result is object",
-                       type=type(trace_result).__name__,
-                       attributes=dir(trace_result))
+        # Log do resultado RAW do PM4Py para debug
+        logger.info("[ConformanceReplayer._token_based_replay] - PM4Py result",
+                   trace_is_fit=trace_result.get('trace_is_fit'),
+                   trace_fitness=trace_result.get('trace_fitness'),
+                   missing_tokens=trace_result.get('missing_tokens'),
+                   remaining_tokens=trace_result.get('remaining_tokens'),
+                   consumed_tokens=trace_result.get('consumed_tokens'),
+                   produced_tokens=trace_result.get('produced_tokens'))
         
-        # Extrai métricas de tokens (suportando dict ou objeto)
-        # PM4Py pode retornar dict com 'produced'/'consumed'/'missing'/'remaining'
-        # OU objeto com atributos trace_fitness, missing_tokens, etc.
-        if isinstance(trace_result, dict):
-            produced = trace_result.get("produced", trace_result.get("produced_tokens", 0))
-            consumed = trace_result.get("consumed", trace_result.get("consumed_tokens", 0))
-            missing = trace_result.get("missing", trace_result.get("missing_tokens", 0))
-            remaining = trace_result.get("remaining", trace_result.get("remaining_tokens", 0))
-            fitness_raw = trace_result.get("trace_fitness", None)
-        else:
-            # Tentar como atributos de objeto
-            produced = getattr(trace_result, "produced", getattr(trace_result, "produced_tokens", 0))
-            consumed = getattr(trace_result, "consumed", getattr(trace_result, "consumed_tokens", 0))
-            missing = getattr(trace_result, "missing", getattr(trace_result, "missing_tokens", 0))
-            remaining = getattr(trace_result, "remaining", getattr(trace_result, "remaining_tokens", 0))
-            fitness_raw = getattr(trace_result, "trace_fitness", None)
+        # Extrair métricas do PM4Py (sempre retorna dict)
+        fitness = float(trace_result.get('trace_fitness', 0.0))
+        missing = int(trace_result.get('missing_tokens', 0))
+        remaining = int(trace_result.get('remaining_tokens', 0))
+        consumed = int(trace_result.get('consumed_tokens', 0))
+        produced = int(trace_result.get('produced_tokens', 0))
         
-        # Log dos valores ANTES de criar token_metrics
-        logger.info("[ConformanceReplayer._token_based_replay] - Extracted values",
-                   produced_raw=produced,
-                   consumed_raw=consumed,
-                   missing_raw=missing,
-                   remaining_raw=remaining,
-                   fitness_from_pm4py=fitness_raw)
+        # Extrair informações extras do replay
+        trace_is_fit = bool(trace_result.get('trace_is_fit', False))
         
-        token_metrics = {
+        # Função auxiliar para converter transições em strings legíveis
+        def transition_to_string(trans):
+            """Converte objeto Transition ou tupla em string."""
+            if isinstance(trans, tuple) and len(trans) >= 2:
+                # Tupla (Transition, label)
+                return trans[1] if trans[1] else str(trans[0].name if hasattr(trans[0], 'name') else trans[0])
+            elif hasattr(trans, 'label') and trans.label:
+                # Objeto Transition com label
+                return trans.label
+            elif hasattr(trans, 'name'):
+                # Objeto Transition com name
+                return trans.name
+            else:
+                # Fallback
+                return str(trans)
+        
+        # Activated transitions: converter para strings legíveis
+        activated_trans = trace_result.get('activated_transitions', [])
+        activated_transitions_str = [transition_to_string(trans) for trans in activated_trans] if activated_trans else []
+        
+        # Reached marking: converter para lista de strings
+        reached_marking = trace_result.get('reached_marking', [])
+        reached_marking_str = [str(mark) for mark in reached_marking] if reached_marking else []
+        
+        # Enabled transitions in marking: converter para lista de strings
+        enabled_trans = trace_result.get('enabled_transitions_in_marking', set())
+        enabled_transitions_str = [transition_to_string(trans) for trans in enabled_trans] if enabled_trans else []
+        
+        # Transitions with problems: converter para lista de strings
+        problem_trans = trace_result.get('transitions_with_problems', [])
+        transitions_with_problems_str = [transition_to_string(trans) for trans in problem_trans] if problem_trans else []
+        
+        # IMPORTANTE: consumed e produced incluem transições skip (τ) invisíveis!
+        # Não usar essas métricas diretamente para interpretação.
+        # O fitness já está correto (calculado pelo PM4Py considerando os skips)
+        
+        extended_metrics = {
             'missing': missing,
             'remaining': remaining,
             'consumed': consumed,
-            'produced': produced
+            'produced': produced,
+            'trace_is_fit': trace_is_fit,
+            'activated_transitions': activated_transitions_str,
+            'reached_marking': reached_marking_str,
+            'enabled_transitions_in_marking': enabled_transitions_str,
+            'transitions_with_problems': transitions_with_problems_str
         }
-        
-        # Log detalhado das métricas de tokens
-        logger.info("[ConformanceReplayer._token_based_replay] - Token metrics",
-                   missing_tokens=missing,
-                   remaining_tokens=remaining,
-                   consumed_tokens=consumed,
-                   produced_tokens=produced)
-        
-        # Calcular fitness
-        # Se PM4Py já calculou, usar esse valor; senão calcular manualmente
-        if fitness_raw is not None:
-            fitness = float(fitness_raw)
-            logger.info("[ConformanceReplayer._token_based_replay] - Using PM4Py fitness",
-                       fitness=fitness)
-        else:
-            # Fitness = 1 - (missing + remaining) / (consumed + missing + remaining)
-            total = consumed + missing + remaining
-            
-            if total == 0:
-                fitness = 1.0
-                logger.warning("[ConformanceReplayer._token_based_replay] - Total tokens is 0, setting fitness to 1.0")
-            else:
-                fitness = 1.0 - ((missing + remaining) / total)
-            
-            logger.info("[ConformanceReplayer._token_based_replay] - Fitness calculated manually",
-                       fitness=fitness,
-                       total_tokens=total)
         
         # Desvios: missing + remaining tokens
         deviations = []
@@ -611,17 +706,21 @@ class ConformanceReplayer:
             deviations.append({
                 "type": "missing_tokens",
                 "count": missing,
-                "description": f"{missing} atividades esperadas não foram executadas"
+                "description": f"{missing} transições esperadas não foram ativadas (pode incluir atividades obrigatórias não executadas)"
             })
         
         if remaining > 0:
             deviations.append({
                 "type": "remaining_tokens",
                 "count": remaining,
-                "description": f"{remaining} atividades extras não previstas no modelo"
+                "description": f"{remaining} tokens restantes (processo não finalizou no estado esperado)"
             })
         
-        return round(fitness, 4), deviations, token_metrics
+        logger.info("[ConformanceReplayer._token_based_replay] - Replay completed",
+                   fitness=fitness,
+                   is_fit=trace_is_fit)
+        
+        return round(fitness, 4), deviations, extended_metrics
     
     def _detect_excessive_loops(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

@@ -91,9 +91,10 @@ def run_server(db_path: str, host: str = '127.0.0.1', port: int = 5000, debug: b
     print(f"Database: {db_path}")
     print(f"\nRotas disponiveis:")
     print(f"  - http://{host}:{port}/")
-    print(f"  - http://{host}:{port}/cohort")
-    print(f"  - http://{host}:{port}/student/<student_hash>")
-    print(f"  - http://{host}:{port}/task/<task_id>")
+    print(f"  - http://{host}:{port}/clear_database")
+    print(f"  - http://{host}:{port}/import")
+    print(f"  - http://{host}:{port}/process_mining")
+    print(f"  - http://{host}:{port}/code-evolution")
     print(f"\nPressione Ctrl+C para parar o servidor\n")
     
     app.run(host=host, port=port, debug=debug)
